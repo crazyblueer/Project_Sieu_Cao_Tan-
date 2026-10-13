@@ -201,3 +201,105 @@ def junction_t():
         [ 2.0/3.0, -1.0/3.0,  2.0/3.0],
         [ 2.0/3.0,  2.0/3.0, -1.0/3.0]
     ], dtype=complex)
+
+#ADD QA
+def z_to_s_Nport(Z, Z0=50.0):
+    """Chuyen tro khang tai Z sang tham so S (he so phan xa) cho mang N cong.
+    Z, Z0 co the la so phuc. Ho Tro Z la ma tran (quet theo tan so)"""
+    
+    Z = np.asarray(Z, dtype = complex)
+    N = Z.shape[0] #so cong 
+    I = np.eye(N) 
+    S = (Z -Z0*I)  @ np.linalg.inv(Z + Z0*I)
+    return S
+
+def s_to_z_Nport(S, Z0=50.0):
+    """Nguoc cua z_to_s_Nport: tu S ve Z. Z khong phu thuoc he tham chieu."""
+    S = np.asarray(S, dtype=complex)
+    N = S.shape[0]
+    I = np.eye(N)
+    Z = Z0 * np.linalg.inv(I - S) @ (I + S)
+    return Z
+
+def renormalize(S, Z0_old, Z0_new):
+    """Doi ma tran S tu he tham chieu Z0_old sang Z0_new (di vong qua Z bat bien)."""
+    Z = s_to_z_Nport(S, Z0_old)      # buoc 1: ve su that vat ly Z
+    S_new = z_to_s_Nport(Z, Z0_new)  # buoc 2: nhin tu he moi
+    return S_new
+
+#TEST RENORMALIZATION HAM PHUC 
+def _FG(z0_vec):
+    z0 = np.asarray(z0_vec, dtype=complex)
+    F  = np.diag(1.0/np.sqrt(np.real(z0)))   # Re(z0) phai > 0
+    G  = np.diag(z0)
+    Gc = np.diag(np.conj(z0))                 # Z0* (lien hop) - mau chot cua Kurokawa
+    return F, G, Gc
+
+def z_to_s_general(Z, z0_vec):
+    """Z -> S, power wave, Z0 phuc / khac nhau tung cong."""
+    Z = np.asarray(Z, dtype=complex)
+    F, G, Gc = _FG(z0_vec)
+    return F @ (Z - Gc) @ np.linalg.inv(Z + G) @ np.linalg.inv(F)
+
+def s_to_z_general(S, z0_vec):
+    """S -> Z (nguoc lai)."""
+    S = np.asarray(S, dtype=complex); N = S.shape[0]; I = np.eye(N)
+    F, G, Gc = _FG(z0_vec)
+    Sp = np.linalg.inv(F) @ S @ F
+    return np.linalg.inv(I - Sp) @ (Gc + Sp @ G)
+
+def renormalize_general(S, z0_old, z0_new):
+    """Doi he tham chieu, cho phep Z0 phuc va khac nhau tung cong."""
+    N = S.shape[0]
+    z0_old = np.broadcast_to(np.asarray(z0_old, dtype=complex), (N,))
+    z0_new = np.broadcast_to(np.asarray(z0_new, dtype=complex), (N,))
+    Z = s_to_z_general(S, z0_old)
+    return z_to_s_general(Z, z0_new)
+
+
+ #ham kiem tra tinh chat mang 
+
+def is_reciprocal(S, tol=1e-9):
+    """Thuan nghich: S = S^T (doi xung). Dung cho mach thu dong thong thuong."""
+    S = np.asarray(S, dtype=complex)
+    return np.allclose(S, S.T, atol=tol)
+
+def is_lossless(S, tol=1e-9):
+    """Khong ton hao: S unita, tuc S^H @ S = I (S^H = chuyen vi lien hop)."""
+    S = np.asarray(S, dtype=complex)
+    N = S.shape[0]
+    return np.allclose(S.conj().T @ S, np.eye(N), atol=tol)
+def is_passive(S, tol=1e-9):
+    """Thu dong: ko tu sinh nang luong. I - S^H @ S co moi gia tri rieng >= 0."""
+    S = np.asarray(S, dtype=complex)
+    N = S.shape[0]
+    M = np.eye(N) - S.conj().T @ S
+    eigenvalues = np.linalg.eigvalsh(M)   # eigvalsh cho ma tran Hermit, tra ve gia tri thuc
+    return np.all(eigenvalues >= -tol)
+
+
+
+if __name__ == "__main__":
+    # Test renormalize: doan day 70.7 ohm he cu -> doi ve he 50 ohm
+    S_old = tline_ideal(np.pi/2)                      # [[0,-j],[-j,0]] trong he 70.7
+    S_new = renormalize(S_old, 50*np.sqrt(2), 50)     # doi ve 50 ohm
+    expected = tline_general(np.pi/2, 50*np.sqrt(2), 50)
+    assert np.allclose(S_new, expected), "renormalize SAI!"
+    print("renormalize OK")
+    
+    # Doan day ly tuong: thuan nghich, KHONG ton hao (day ly tuong ko mat nang luong)
+    line = tline_ideal(np.pi/2)
+    print("Day ly tuong:")
+    print("  reciprocal:", is_reciprocal(line))   # True
+    print("  lossless  :", is_lossless(line))      # True
+    print("  passive   :", is_passive(line))       # True
+
+# Dien tro noi tiep: thuan nghich, CO ton hao (dien tro an nang luong) -> ko lossless, nhung passive
+    R = resistor_series(50, 50)
+    print("Dien tro noi tiep:")
+    print("  reciprocal:", is_reciprocal(R))       # True
+    print("  lossless  :", is_lossless(R))          # False (co ton hao!)
+    print("  passive   :", is_passive(R))           # True (ko tu sinh nang luong)
+
+# Wilkinson (lay tu ket qua S cua ban) - nen thuan nghich, co ton hao tren R cach ly
+# print(is_reciprocal(S_wilkinson), is_lossless(S_wilkinson), is_passive(S_wilkinson))
