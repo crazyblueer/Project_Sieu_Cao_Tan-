@@ -1,7 +1,5 @@
 """
 Module: components.py
-Vai trò: Người B — Thư viện phần tử (Component Library)
-
 Cung cấp ma trận tán xạ S (Scattering Matrix) cho các phần tử vi sóng cơ bản
 trong hệ trở kháng tham chiếu thực Z0 (mặc định 50 Ohm).
 Mỗi hàm tính tại MỘT tần số f (Hz) và trả về mảng NumPy complex kích thước (N, N).
