@@ -94,8 +94,10 @@ class CircuitNetlist:
             params = {k.upper(): v for k, v in params.items()}
             f_start, f_stop = to_si(params['START']), to_si(params['STOP'])
             points = int(params.get('POINTS', 1001))
-            if not 0 < f_start < f_stop:
-                raise NetlistError("cần 0 < START < STOP")
+            if points < 1:
+                raise NetlistError("POINTS phải >= 1")
+            if f_start <= 0 or f_stop < f_start or (points > 1 and f_stop == f_start):
+                raise NetlistError("cần 0 < START < STOP (START = STOP chỉ khi POINTS=1)")
             self.freqs = np.linspace(f_start, f_stop, points)
 
         elif cmd == "PORT":
