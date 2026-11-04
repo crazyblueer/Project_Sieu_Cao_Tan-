@@ -1,305 +1,386 @@
-import numpy as np
+"""
+Module: components.py
+Vai trò: Người B — Thư viện phần tử (Component Library)
+
+Cung cấp ma trận tán xạ S (Scattering Matrix) cho các phần tử vi sóng cơ bản
+trong hệ trở kháng tham chiếu thực Z0 (mặc định 50 Ohm).
+Mỗi hàm tính tại MỘT tần số f (Hz) và trả về mảng NumPy complex kích thước (N, N).
+
+Danh mục:
+  0. to_si                         - chuẩn hóa tiền tố đơn vị
+  1-3. R, L, C nối tiếp / song song (mạng 2 cổng)
+  4. load_1port                    - trở kháng Z nối đất (mạng 1 cổng)
+  5. Đường truyền: tline_ideal, tline_general, beta_l_from_freq
+  6. Vi dải: microstrip_z0_eeff, microstrip
+  7. Đường ghép đối xứng: coupled_line (4 cổng)
+  8. Hở mạch, ngắn mạch, stub; mối nối chữ T và mối nối N cổng
+"""
+
 import re
+import numpy as np
+from scipy.constants import c as C0, mu_0
 
-def to_si(val):
+ETA0 = mu_0 * C0          # Trở kháng sóng chân không ~ 376.73 Ohm
 
-    if isinstance(val, (int, float)):
-        return float(val)
-        
-    val_str = str(val).strip().lower()
-    
-    multipliers = {
-        'f': 1e-15,  # femto
-        'p': 1e-12,  # pico (pF)
-        'n': 1e-9,   # nano (nH)
-        'u': 1e-6,   # micro (uF)
-        'm': 1e-3,   # milli
-        'k': 1e3,    # kilo
-        'meg': 1e6,  # Mega
-        'mhz': 1e6,  # Mega (Hz)
-        'g': 1e9,    # Giga (GHz)
-        'ghz': 1e9
-    }
-    
-    match = re.match(r"^([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*([a-zA-Z]*)$", val_str)
-    if not match:
-        raise ValueError(f"Không thể nhận diện định dạng giá trị: {val}")
-        
-    number, unit = match.groups()
-    number = float(number)
-    
-    unit = unit.replace('hz', '').replace('ohm', '').replace('f', '').replace('h', '')
-    
-    for prefix, factor in multipliers.items():
-        if unit == prefix or unit.startswith(prefix):
-            return number * factor
-            
-    return number
+
+# =====================================================================
+# 0. CHUẨN HÓA TIỀN TỐ ĐƠN VỊ
+# =====================================================================
+
+_PREFIX = {'f': 1e-15, 'p': 1e-12, 'n': 1e-9, 'u': 1e-6, 'µ': 1e-6,
+           'm': 1e-3, 'k': 1e3, 'g': 1e9, 't': 1e12}
+_UNITS = ('hz', 'ohm', 'h', 'f', 's', 'm', 'deg')
+_NUM_RE = re.compile(r'^\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*([a-zA-Zµ]*)\s*$')
+
+
+def to_si(value):
+    """
+    Chuyển giá trị có tiền tố SI về số thực theo đơn vị cơ bản.
+    Quy ước SPICE (không phân biệt hoa/thường):
+        '10n' -> 1e-8   '1pF' -> 1e-12   '2.4GHz' -> 2.4e9   '4.7uH' -> 4.7e-6
+        '1Meg' -> 1e6   '100MHz' -> 1e8  '5mm' -> 5e-3       '70.71' -> 70.71
+    LƯU Ý: 'm' / 'M' đứng một mình = milli. Mega phải viết 'Meg' hoặc 'MHz'.
+    """
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    m = _NUM_RE.match(str(value))
+    if not m:
+        raise ValueError(f"Giá trị không hợp lệ: {value!r}")
+    num, suffix = float(m.group(1)), m.group(2).lower()
+    if suffix == '':
+        return num
+    if suffix.startswith('meg'):
+        return num * 1e6
+    if suffix == 'mhz':
+        return num * 1e6
+    if suffix in _PREFIX:                      # một ký tự = tiền tố
+        return num * _PREFIX[suffix]
+    if suffix in _UNITS:                       # chỉ có đơn vị
+        return num
+    p, rest = suffix[0], suffix[1:]
+    if p in _PREFIX and rest in _UNITS:        # tiền tố + đơn vị
+        return num * _PREFIX[p]
+    raise ValueError(f"Tiền tố/đơn vị không nhận dạng được: {value!r}")
+
+
+# =====================================================================
+# Hai khối cơ sở: trở kháng nối tiếp và dẫn nạp song song
+# =====================================================================
+
+def _series_z(Z, Z0=50.0):
+    """S11 = S22 = Z/(Z+2Z0),  S21 = S12 = 2Z0/(Z+2Z0)."""
+    den = Z + 2.0 * Z0
+    s11 = Z / den
+    s21 = 2.0 * Z0 / den
+    return np.array([[s11, s21],
+                     [s21, s11]], dtype=complex)
+
+
+def _shunt_y(Y, Z0=50.0):
+    """S11 = S22 = -Y*Z0/(Y*Z0+2),  S21 = S12 = 2/(Y*Z0+2)."""
+    den = Y * Z0 + 2.0
+    s11 = -(Y * Z0) / den
+    s21 = 2.0 / den
+    return np.array([[s11, s21],
+                     [s21, s11]], dtype=complex)
+
+
+# =====================================================================
+# 1. ĐIỆN TRỞ - MẠNG 2 CỔNG
+# =====================================================================
 
 def resistor_series(R, Z0=50.0):
-    """
-        S11 = S22 = R / (R + 2*Z0)
-        S21 = S12 = 2*Z0 / (R + 2*Z0)
-    """
-    R = float(R)
-    Z0 = float(Z0)
-    den = R + 2.0 * Z0
-    s11 = R / den
-    s21 = 2.0 * Z0 / den
-    return np.array([
-        [s11, s21],
-        [s21, s11]
-    ], dtype=complex)
+    """Điện trở R mắc NỐI TIẾP: S11 = R/(R+2Z0), S21 = 2Z0/(R+2Z0)."""
+    return _series_z(complex(float(R)), float(Z0))
 
 
 def resistor_shunt(R, Z0=50.0):
-    """
-        Y = 1 / R:
-        S11 = S22 = -Z0 / (Z0 + 2*R)
-        S21 = S12 = 2*R / (Z0 + 2*R)
-    """
-    R = float(R)
-    Z0 = float(Z0)
-    den = 2.0 * R + Z0
-    s11 = -Z0 / den
-    s21 = (2.0 * R) / den
-    return np.array([
-        [s11, s21],
-        [s21, s11]
-    ], dtype=complex)
+    """Điện trở R mắc SONG SONG xuống GND: S11 = -Z0/(Z0+2R), S21 = 2R/(Z0+2R)."""
+    return _shunt_y(1.0 / float(R), float(Z0))
 
+
+# =====================================================================
+# 2. TỤ ĐIỆN - MẠNG 2 CỔNG
+# =====================================================================
 
 def capacitor_series(C, f, Z0=50.0):
-    """
-        Z_C = 1 / (j * 2*pi*f * C)
-    """
-    omega = 2.0 * np.pi * float(f)
-    Z_C = 1.0 / (1j * omega * float(C))
-    den = Z_C + 2.0 * Z0
-    s11 = Z_C / den
-    s21 = (2.0 * Z0) / den
-    return np.array([
-        [s11, s21],
-        [s21, s11]
-    ], dtype=complex)
+    """Tụ C mắc NỐI TIẾP: Z_C = 1/(j*2*pi*f*C)."""
+    Z_C = 1.0 / (1j * 2.0 * np.pi * float(f) * float(C))
+    return _series_z(Z_C, float(Z0))
 
 
 def capacitor_shunt(C, f, Z0=50.0):
-    """
-        Y_C = j * 2*pi*f * C
-    """
-    omega = 2.0 * np.pi * float(f)
-    Y_C = 1j * omega * float(C)
-    den = Y_C * Z0 + 2.0
-    s11 = -(Y_C * Z0) / den
-    s21 = 2.0 / den
-    return np.array([
-        [s11, s21],
-        [s21, s11]
-    ], dtype=complex)
+    """Tụ C mắc SONG SONG xuống GND: Y_C = j*2*pi*f*C."""
+    Y_C = 1j * 2.0 * np.pi * float(f) * float(C)
+    return _shunt_y(Y_C, float(Z0))
 
 
+# =====================================================================
+# 3. CUỘN CẢM - MẠNG 2 CỔNG
+# =====================================================================
 
 def inductor_series(L, f, Z0=50.0):
-    """
-        Z_L = j * 2*pi*f * L
-    """
-    omega = 2.0 * np.pi * float(f)
-    Z_L = 1j * omega * float(L)
-    den = Z_L + 2.0 * Z0
-    s11 = Z_L / den
-    s21 = (2.0 * Z0) / den
-    return np.array([
-        [s11, s21],
-        [s21, s11]
-    ], dtype=complex)
+    """Cuộn cảm L mắc NỐI TIẾP: Z_L = j*2*pi*f*L."""
+    Z_L = 1j * 2.0 * np.pi * float(f) * float(L)
+    return _series_z(Z_L, float(Z0))
 
 
 def inductor_shunt(L, f, Z0=50.0):
-    """
-        Y_L = 1 / (j * 2*pi*f * L)
-    """
-    omega = 2.0 * np.pi * float(f)
-    Z_L = 1j * omega * float(L)
-    Y_L = 1.0 / Z_L
-    den = Y_L * Z0 + 2.0
-    s11 = -(Y_L * Z0) / den
-    s21 = 2.0 / den
-    return np.array([
-        [s11, s21],
-        [s21, s11]
-    ], dtype=complex)
+    """Cuộn cảm L mắc SONG SONG xuống GND: Y_L = 1/(j*2*pi*f*L)."""
+    Y_L = 1.0 / (1j * 2.0 * np.pi * float(f) * float(L))
+    return _shunt_y(Y_L, float(Z0))
 
 
+# =====================================================================
+# 4. TRỞ KHÁNG NỐI ĐẤT - MẠNG 1 CỔNG (dùng khi netlist có nút '0'/'GND')
+# =====================================================================
+
+def load_1port(Z, Z0=50.0):
+    """
+    Trở kháng Z nối từ một nút xuống đất, nhìn như mạng 1 cổng:
+        Gamma = (Z - Z0) / (Z + Z0)
+    Z = np.inf -> Gamma = +1 (hở mạch), Z = 0 -> Gamma = -1 (ngắn mạch).
+    """
+    if np.isinf(Z):
+        g = 1.0 + 0j
+    else:
+        Z = complex(Z)
+        g = (Z - Z0) / (Z + Z0)
+    return np.array([[g]], dtype=complex)
+
+
+def z_of(kind, value, f):
+    """Trở kháng của R, L, C tại tần số f (dùng cho load_1port)."""
+    w = 2.0 * np.pi * float(f)
+    if kind == 'R':
+        return complex(float(value))
+    if kind == 'L':
+        return 1j * w * float(value)
+    if kind == 'C':
+        return 1.0 / (1j * w * float(value))
+    raise ValueError(f"Loại phần tử không hợp lệ: {kind}")
+
+
+# =====================================================================
+# 5. ĐƯỜNG TRUYỀN SÓNG - MẠNG 2 CỔNG
+# =====================================================================
 
 def tline_ideal(theta):
     """
-        S11 = S22 = 0
-        S21 = S12 = exp(-j * theta)
+    Đường truyền lý tưởng có Zc = Z0 tham chiếu: không phản xạ, chỉ quay pha.
+        S11 = S22 = 0,  S21 = S12 = exp(-j*theta)   (theta = beta*l, radian)
     """
     s21 = np.exp(-1j * float(theta))
-    return np.array([
-        [0.0,  s21],
-        [s21,  0.0]
-    ], dtype=complex)
+    return np.array([[0.0, s21],
+                     [s21, 0.0]], dtype=complex)
 
 
 def tline_general(theta, Zc, Z0=50.0):
     """
-        A = D = cos(theta)
-        B = j*Zc*sin(theta)
-        C = j*sin(theta)/Zc
+    Đường truyền không tổn hao có trở kháng đặc tính Zc trong hệ chuẩn Z0.
+    Tính qua ABCD: A = D = cos(theta), B = j*Zc*sin(theta), C = j*sin(theta)/Zc
+    rồi chuyển sang S (Pozar, Bảng 4.2).
     """
     theta = float(theta)
     Zc = float(Zc)
     Z0 = float(Z0)
-    
+
     A = np.cos(theta)
     D = A
     B = 1j * Zc * np.sin(theta)
     C = 1j * np.sin(theta) / Zc
-    
+
     den = A + (B / Z0) + (C * Z0) + D
     s11 = (A + (B / Z0) - (C * Z0) - D) / den
     s12 = 2.0 * (A * D - B * C) / den
     s21 = 2.0 / den
     s22 = (-A + (B / Z0) - (C * Z0) + D) / den
-    
-    return np.array([
-        [s11, s12],
-        [s21, s22]
-    ], dtype=complex)
+
+    return np.array([[s11, s12],
+                     [s21, s22]], dtype=complex)
 
 
 def beta_l_from_freq(f, f0, electrical_length_deg=90.0):
+    """
+    Góc dài điện beta*l (radian) tại tần số f, biết độ dài điện tại f0.
+    Đường TEM không tán sắc: theta(f) = theta0 * f / f0.
+    """
+    theta0 = np.deg2rad(float(electrical_length_deg))
+    return theta0 * (float(f) / float(f0))
 
-    theta0 = np.deg2rad(electrical_length_deg)
-    return theta0 * (f / f0)
 
+# =====================================================================
+# 6. ĐƯỜNG VI DẢI (MICROSTRIP) - Hammerstad & Jensen (1980), t = 0
+# =====================================================================
+
+def microstrip_z0_eeff(W, h, er):
+    """
+    Trở kháng đặc tính Zc và hằng số điện môi hiệu dụng eps_eff của vi dải
+    (mô hình chuẩn tĩnh, độ dày dải t = 0, không tán sắc).
+        W  : độ rộng dải dẫn (m)
+        h  : độ dày đế (m)
+        er : hằng số điện môi tương đối của đế
+    """
+    u = float(W) / float(h)
+    er = float(er)
+    a = (1.0 + np.log((u**4 + (u / 52.0)**2) / (u**4 + 0.432)) / 49.0
+         + np.log(1.0 + (u / 18.1)**3) / 18.7)
+    b = 0.564 * ((er - 0.9) / (er + 3.0))**0.053
+    eps_eff = (er + 1.0) / 2.0 + (er - 1.0) / 2.0 * (1.0 + 10.0 / u)**(-a * b)
+    fu = 6.0 + (2.0 * np.pi - 6.0) * np.exp(-(30.666 / u)**0.7528)
+    z_air = ETA0 / (2.0 * np.pi) * np.log(fu / u + np.sqrt(1.0 + (2.0 / u)**2))
+    Zc = z_air / np.sqrt(eps_eff)
+    return Zc, eps_eff
+
+
+def microstrip(W, h, er, length, f, Z0=50.0):
+    """
+    Ma trận S của đoạn vi dải dài 'length' (m) tại tần số f.
+    theta = beta*l với beta = 2*pi*f*sqrt(eps_eff)/c, rồi dùng tline_general.
+    """
+    Zc, eps_eff = microstrip_z0_eeff(W, h, er)
+    beta = 2.0 * np.pi * float(f) * np.sqrt(eps_eff) / C0
+    return tline_general(beta * float(length), Zc, Z0)
+
+
+# =====================================================================
+# 7. ĐƯỜNG GHÉP ĐỐI XỨNG (COUPLED LINE) - MẠNG 4 CỔNG
+# =====================================================================
+
+def coupled_line(Z0e, Z0o, theta, Z0=50.0, theta_o=None):
+    """
+    Hai đường truyền ghép đối xứng, phân tích chế độ chẵn / lẻ.
+    Đánh số cổng: 1-2 là hai đầu dải a, 3-4 là hai đầu dải b,
+                  cổng 1 và cổng 3 cùng một phía.
+        S = [[ (Se+So)/2 , (Se-So)/2 ],
+             [ (Se-So)/2 , (Se+So)/2 ]]
+    theta   : độ dài điện chế độ chẵn (rad)
+    theta_o : độ dài điện chế độ lẻ (rad), mặc định = theta (môi trường TEM)
+    Bộ ghép lambda/4: hệ số ghép tại f0 là C = (Z0e - Z0o) / (Z0e + Z0o).
+    """
+    if theta_o is None:
+        theta_o = theta
+    Se = tline_general(theta, Z0e, Z0)
+    So = tline_general(theta_o, Z0o, Z0)
+    A = (Se + So) / 2.0
+    B = (Se - So) / 2.0
+    S = np.zeros((4, 4), dtype=complex)
+    S[0:2, 0:2] = A
+    S[2:4, 2:4] = A
+    S[0:2, 2:4] = B
+    S[2:4, 0:2] = B
+    return S
+
+
+# =====================================================================
+# 8. ĐIỂM KẾT THÚC, STUB VÀ MỐI NỐI
+# =====================================================================
 
 def open_circuit():
-    """
-       Gamma = +1
-    """
+    """Hở mạch (mạng 1 cổng): Gamma = +1."""
     return np.array([[1.0 + 0j]], dtype=complex)
 
 
 def short_circuit():
-    """
-        Gamma = -1
-    """
+    """Ngắn mạch (mạng 1 cổng): Gamma = -1."""
     return np.array([[-1.0 + 0j]], dtype=complex)
 
 
+def stub(theta, Zc, Z0=50.0, termination='open'):
+    """
+    Stub song song (mạng 1 cổng): đoạn đường truyền Zc dài theta kết thúc hở/ngắn mạch.
+        Hở mạch : Zin = -j*Zc*cot(theta)     Ngắn mạch: Zin = j*Zc*tan(theta)
+    """
+    theta = float(theta)
+    if termination == 'open':
+        Zin = -1j * Zc / np.tan(theta)
+    elif termination == 'short':
+        Zin = 1j * Zc * np.tan(theta)
+    else:
+        raise ValueError("termination phải là 'open' hoặc 'short'")
+    return load_1port(Zin, Z0)
+
+
+def junction_n(n):
+    """
+    Mối nối lý tưởng N cổng (cùng điện áp, tổng dòng = 0, cùng Z0):
+        S = (2/N) * J - I     (J: ma trận toàn số 1)
+    N = 3 -> S_ii = -1/3, S_ij = 2/3.
+    """
+    n = int(n)
+    if n < 2:
+        raise ValueError("Mối nối cần ít nhất 2 cổng")
+    return (2.0 / n) * np.ones((n, n), dtype=complex) - np.eye(n, dtype=complex)
+
+
 def junction_t():
-    """
-        S_ii = -1/3
-        S_ij = 2/3
-    """
-    return np.array([
-        [-1.0/3.0,  2.0/3.0,  2.0/3.0],
-        [ 2.0/3.0, -1.0/3.0,  2.0/3.0],
-        [ 2.0/3.0,  2.0/3.0, -1.0/3.0]
-    ], dtype=complex)
-
-#ADD QA
-def z_to_s_Nport(Z, Z0=50.0):
-    """Chuyen tro khang tai Z sang tham so S (he so phan xa) cho mang N cong.
-    Z, Z0 co the la so phuc. Ho Tro Z la ma tran (quet theo tan so)"""
-    
-    Z = np.asarray(Z, dtype = complex)
-    N = Z.shape[0] #so cong 
-    I = np.eye(N) 
-    S = (Z -Z0*I)  @ np.linalg.inv(Z + Z0*I)
-    return S
-
-def s_to_z_Nport(S, Z0=50.0):
-    """Nguoc cua z_to_s_Nport: tu S ve Z. Z khong phu thuoc he tham chieu."""
-    S = np.asarray(S, dtype=complex)
-    N = S.shape[0]
-    I = np.eye(N)
-    Z = Z0 * np.linalg.inv(I - S) @ (I + S)
-    return Z
-
-def renormalize(S, Z0_old, Z0_new):
-    """Doi ma tran S tu he tham chieu Z0_old sang Z0_new (di vong qua Z bat bien)."""
-    Z = s_to_z_Nport(S, Z0_old)      # buoc 1: ve su that vat ly Z
-    S_new = z_to_s_Nport(Z, Z0_new)  # buoc 2: nhin tu he moi
-    return S_new
-
-#TEST RENORMALIZATION HAM PHUC 
-def _FG(z0_vec):
-    z0 = np.asarray(z0_vec, dtype=complex)
-    F  = np.diag(1.0/np.sqrt(np.real(z0)))   # Re(z0) phai > 0
-    G  = np.diag(z0)
-    Gc = np.diag(np.conj(z0))                 # Z0* (lien hop) - mau chot cua Kurokawa
-    return F, G, Gc
-
-def z_to_s_general(Z, z0_vec):
-    """Z -> S, power wave, Z0 phuc / khac nhau tung cong."""
-    Z = np.asarray(Z, dtype=complex)
-    F, G, Gc = _FG(z0_vec)
-    return F @ (Z - Gc) @ np.linalg.inv(Z + G) @ np.linalg.inv(F)
-
-def s_to_z_general(S, z0_vec):
-    """S -> Z (nguoc lai)."""
-    S = np.asarray(S, dtype=complex); N = S.shape[0]; I = np.eye(N)
-    F, G, Gc = _FG(z0_vec)
-    Sp = np.linalg.inv(F) @ S @ F
-    return np.linalg.inv(I - Sp) @ (Gc + Sp @ G)
-
-def renormalize_general(S, z0_old, z0_new):
-    """Doi he tham chieu, cho phep Z0 phuc va khac nhau tung cong."""
-    N = S.shape[0]
-    z0_old = np.broadcast_to(np.asarray(z0_old, dtype=complex), (N,))
-    z0_new = np.broadcast_to(np.asarray(z0_new, dtype=complex), (N,))
-    Z = s_to_z_general(S, z0_old)
-    return z_to_s_general(Z, z0_new)
+    """Mối nối ngã ba chữ T lý tưởng 3 cổng: S_ii = -1/3, S_ij = 2/3."""
+    return junction_n(3)
 
 
- #ham kiem tra tinh chat mang 
-
-def is_reciprocal(S, tol=1e-9):
-    """Thuan nghich: S = S^T (doi xung). Dung cho mach thu dong thong thuong."""
-    S = np.asarray(S, dtype=complex)
-    return np.allclose(S, S.T, atol=tol)
-
-def is_lossless(S, tol=1e-9):
-    """Khong ton hao: S unita, tuc S^H @ S = I (S^H = chuyen vi lien hop)."""
-    S = np.asarray(S, dtype=complex)
-    N = S.shape[0]
-    return np.allclose(S.conj().T @ S, np.eye(N), atol=tol)
-def is_passive(S, tol=1e-9):
-    """Thu dong: ko tu sinh nang luong. I - S^H @ S co moi gia tri rieng >= 0."""
-    S = np.asarray(S, dtype=complex)
-    N = S.shape[0]
-    M = np.eye(N) - S.conj().T @ S
-    eigenvalues = np.linalg.eigvalsh(M)   # eigvalsh cho ma tran Hermit, tra ve gia tri thuc
-    return np.all(eigenvalues >= -tol)
-
-
-
+# =====================================================================
+# BỘ TEST TỰ ĐỘNG (CHẠY TRỰC TIẾP FILE ĐỂ KIỂM TRA)
+# =====================================================================
 if __name__ == "__main__":
-    # Test renormalize: doan day 70.7 ohm he cu -> doi ve he 50 ohm
-    S_old = tline_ideal(np.pi/2)                      # [[0,-j],[-j,0]] trong he 70.7
-    S_new = renormalize(S_old, 50*np.sqrt(2), 50)     # doi ve 50 ohm
-    expected = tline_general(np.pi/2, 50*np.sqrt(2), 50)
-    assert np.allclose(S_new, expected), "renormalize SAI!"
-    print("renormalize OK")
-    
-    # Doan day ly tuong: thuan nghich, KHONG ton hao (day ly tuong ko mat nang luong)
-    line = tline_ideal(np.pi/2)
-    print("Day ly tuong:")
-    print("  reciprocal:", is_reciprocal(line))   # True
-    print("  lossless  :", is_lossless(line))      # True
-    print("  passive   :", is_passive(line))       # True
+    print("=" * 60)
+    print("KIỂM THỬ THƯ VIỆN LINH KIỆN COMPONENTS.PY (NGƯỜI B)")
+    print("=" * 60)
 
-# Dien tro noi tiep: thuan nghich, CO ton hao (dien tro an nang luong) -> ko lossless, nhung passive
-    R = resistor_series(50, 50)
-    print("Dien tro noi tiep:")
-    print("  reciprocal:", is_reciprocal(R))       # True
-    print("  lossless  :", is_lossless(R))          # False (co ton hao!)
-    print("  passive   :", is_passive(R))           # True (ko tu sinh nang luong)
+    f_test = 2.4e9
+    Z0 = 50.0
 
-# Wilkinson (lay tu ket qua S cua ban) - nen thuan nghich, co ton hao tren R cach ly
-# print(is_reciprocal(S_wilkinson), is_lossless(S_wilkinson), is_passive(S_wilkinson))
+    # 0. to_si
+    cases = {'10n': 1e-8, '2.4GHz': 2.4e9, '1Meg': 1e6, '100MHz': 1e8, '70.71': 70.71,
+             '1pF': 1e-12, '4.7uH': 4.7e-6, '5mm': 5e-3, '3.3k': 3.3e3, '1f': 1e-15}
+    for s, v in cases.items():
+        assert np.isclose(to_si(s), v, rtol=1e-12), f"Lỗi to_si({s})"
+    print("[PASS] 0. to_si:", len(cases), "trường hợp")
+
+    # 1. Điện trở
+    sr = resistor_series(100.0, Z0)
+    assert np.isclose(sr[0, 0], 0.5) and np.isclose(sr[0, 1], 0.5), "Lỗi resistor_series"
+    sh = resistor_shunt(50.0, Z0)
+    assert np.isclose(sh[0, 0], -1/3) and np.isclose(sh[0, 1], 2/3), "Lỗi resistor_shunt"
+    print("[PASS] 1. Điện trở nối tiếp và song song")
+
+    # 2. L, C không tổn hao, thuận nghịch
+    for S in (capacitor_series(1e-12, f_test), capacitor_shunt(1e-12, f_test),
+              inductor_series(2e-9, f_test), inductor_shunt(2e-9, f_test)):
+        assert np.allclose(S.conj().T @ S, np.eye(2)), "Lỗi không tổn hao L/C"
+        assert np.allclose(S, S.T), "Lỗi thuận nghịch L/C"
+    print("[PASS] 2. Tụ điện và cuộn cảm (không tổn hao, thuận nghịch)")
+
+    # 3. Đường truyền
+    th = beta_l_from_freq(f_test, f_test, 90)
+    assert np.isclose(tline_ideal(th)[0, 1], -1j), "Lỗi tline_ideal"
+    tg = tline_general(th, 50 * np.sqrt(2), Z0)
+    assert np.isclose(abs(tg[0, 0]), 1/3) and np.isclose(tg[1, 0], -1j * 2 * np.sqrt(2) / 3), "Lỗi tline_general"
+    print("[PASS] 3. Đường truyền lý tưởng và tổng quát (70.71 Ohm, lambda/4)")
+
+    # 4. Vi dải: W ~ 3.05 mm trên FR4 h=1.6 mm cho ~50 Ohm
+    Zc, ee = microstrip_z0_eeff(3.05e-3, 1.6e-3, 4.4)
+    assert 48 < Zc < 52 and 3.2 < ee < 3.5, f"Lỗi microstrip ({Zc:.2f} Ohm, eeff={ee:.3f})"
+    S = microstrip(3.05e-3, 1.6e-3, 4.4, 10e-3, f_test)
+    assert np.allclose(S.conj().T @ S, np.eye(2)), "Lỗi vi dải không tổn hao"
+    print(f"[PASS] 4. Vi dải W=3.05mm, h=1.6mm, er=4.4: Zc={Zc:.2f} Ohm, eeff={ee:.3f}")
+
+    # 5. Đường ghép lambda/4, C = 10 dB
+    Cc = 10 ** (-10 / 20)
+    Z0e, Z0o = Z0 * np.sqrt((1 + Cc) / (1 - Cc)), Z0 * np.sqrt((1 - Cc) / (1 + Cc))
+    Scl = coupled_line(Z0e, Z0o, np.pi / 2, Z0)
+    assert np.isclose(abs(Scl[2, 0]), Cc), "Lỗi hệ số ghép"
+    assert abs(Scl[0, 0]) < 1e-12 and abs(Scl[3, 0]) < 1e-12, "Lỗi phối hợp/cách ly"
+    assert np.allclose(Scl.conj().T @ Scl, np.eye(4)), "Lỗi đường ghép không tổn hao"
+    print(f"[PASS] 5. Đường ghép lambda/4: |S31| = {abs(Scl[2,0]):.4f} (= C 10 dB), S11 = S41 = 0")
+
+    # 6. Hở, ngắn mạch, stub, mối nối
+    assert np.isclose(open_circuit()[0, 0], 1) and np.isclose(short_circuit()[0, 0], -1)
+    assert np.isclose(stub(np.pi / 2, 50, Z0, 'open')[0, 0], -1), "Lỗi stub hở lambda/4"
+    j3 = junction_t()
+    assert np.isclose(j3[0, 0], -1/3) and np.isclose(j3[0, 1], 2/3), "Lỗi junction_t"
+    for n in (3, 4, 5):
+        J = junction_n(n)
+        assert np.allclose(J.conj().T @ J, np.eye(n)), f"Lỗi junction_n({n})"
+    print("[PASS] 6. Hở mạch, ngắn mạch, stub, mối nối T và N cổng")
+
+    print("\n=> TẤT CẢ KIỂM THỬ ĐẠT.")
