@@ -316,6 +316,72 @@ def junction_t():
     return junction_n(3)
 
 
+
+# =====================================================================
+# 9. BIẾN ĐỔI VÀ KIỂM TRA MA TRẬN (phần chung của nhóm - main.py, solver.py dùng)
+# =====================================================================
+
+def z_to_s_Nport(Z, Z0=50.0):
+    """Ma trận trở kháng Z (NxN) -> S, tham chiếu thực Z0 chung: S = (Z - Z0 I)(Z + Z0 I)^-1."""
+    Z = np.asarray(Z, dtype=complex)
+    I = np.eye(Z.shape[0])
+    return (Z - Z0 * I) @ np.linalg.inv(Z + Z0 * I)
+
+
+def s_to_z_Nport(S, Z0=50.0):
+    """S -> Z, tham chiếu thực Z0 chung: Z = Z0 (I + S)(I - S)^-1 (không tồn tại nếu I - S suy biến)."""
+    S = np.asarray(S, dtype=complex)
+    I = np.eye(S.shape[0])
+    return Z0 * (I + S) @ np.linalg.inv(I - S)
+
+
+def renormalize_general(S, z_old, z_new):
+    """
+    Chuẩn hóa lại S theo sóng công suất (Kurokawa), Z0 phức và khác nhau từng cổng.
+        a = (V + Z I) / (2 sqrt(Re Z)),  b = (V - Z* I) / (2 sqrt(Re Z))
+    S' = Q P^-1,  P = F'[F^-1 + (G'-G) K (I-S)],  Q = F'[F^-1 - (G+G'*) K (I-S)],
+    K = (G+G*)^-1 F^-1. Không đi qua ma trận Z nên dùng được cả cho mối nối T, hở mạch.
+    z_old, z_new: số (dùng chung cho mọi cổng) hoặc danh sách N giá trị.
+    """
+    S = np.asarray(S, dtype=complex)
+    n = S.shape[0]
+    g = np.broadcast_to(np.asarray(z_old, dtype=complex), (n,))
+    gp = np.broadcast_to(np.asarray(z_new, dtype=complex), (n,))
+    Finv = np.diag(2.0 * np.sqrt(g.real))
+    Fp = np.diag(1.0 / (2.0 * np.sqrt(gp.real)))
+    K = np.diag(2.0 * np.sqrt(g.real) / (g + g.conj()))
+    I = np.eye(n)
+    P = Fp @ (Finv + np.diag(gp - g) @ K @ (I - S))
+    Q = Fp @ (Finv - np.diag(g + gp.conj()) @ K @ (I - S))
+    return Q @ np.linalg.inv(P)
+
+
+def renormalize(S, z_old, z_new):
+    """Chuẩn hóa lại với Z0 THỰC (trường hợp riêng của renormalize_general)."""
+    if np.iscomplexobj(z_old) and np.any(np.imag(z_old)) or np.iscomplexobj(z_new) and np.any(np.imag(z_new)):
+        raise ValueError("renormalize chỉ dùng cho Z0 thực; dùng renormalize_general cho Z0 phức")
+    return renormalize_general(S, z_old, z_new)
+
+
+def is_reciprocal(S, tol=1e-9):
+    """Thuận nghịch: S = S^T."""
+    S = np.asarray(S)
+    return bool(np.allclose(S, S.T, atol=tol))
+
+
+def is_lossless(S, tol=1e-9):
+    """Không tổn hao: S^H S = I."""
+    S = np.asarray(S)
+    return bool(np.allclose(S.conj().T @ S, np.eye(S.shape[0]), atol=tol))
+
+
+def is_passive(S, tol=1e-9):
+    """Thụ động: I - S^H S bán xác định dương (mọi trị riêng >= 0)."""
+    S = np.asarray(S)
+    M = np.eye(S.shape[0]) - S.conj().T @ S
+    return bool(np.linalg.eigvalsh((M + M.conj().T) / 2).min() >= -tol)
+
+
 # =====================================================================
 # BỘ TEST TỰ ĐỘNG (CHẠY TRỰC TIẾP FILE ĐỂ KIỂM TRA)
 # =====================================================================
