@@ -1,0 +1,46 @@
+! =====================================================================
+! amplifier.net - TANG KHUECH DAI TRANSISTOR CO HOI TIEP (KHONG THUAN NGHICH)
+! =====================================================================
+! Muc dich: dua vi du transistor cua transistor_bug_demo.py ve dang NETLIST.
+!
+! Transistor doc tu fet.s2p (mo hinh FET tin hieu nho, |S21/S12| ~ 40..160 lan
+! -> KHONG thuan nghich ro ret).
+!
+! QUAN TRONG - vi sao phai co dien tro HOI TIEP RFB:
+! Loi dao he so (1-S[p,q]) <-> (1-S[q,p]) trong engine.connect_ports() CHI
+! bieu hien khi hai cong p,q duoc noi NAM TRONG CUNG mot ma tran S va duong
+! truyen giua chung KHONG thuan nghich (S[p,q] != S[q,p]). Voi mach cascade
+! thuan (chi noi tiep tung khoi) thi luon co S[p,q] = S[q,p] = 0 tai thoi
+! diem noi -> ca hai he so deu bang 1 -> loi bi AN hoan toan.
+! RFB tao mot VONG KIN G1 -> Q1 -> D1 -> RFB -> G1 bao quanh transistor,
+! nen khi rut gon pairwise se phat sinh truong hop S[p,q] != S[q,p] va loi
+! lo ra (xem bang "CHUNG MINH" trong compare_algorithms.py).
+!
+! Topo:
+!                    +--------- RFB (500 ohm) ---------+
+!                    |                                 |
+!   PORT1 --TLI(50,45d)-- G1 --[Q1: FET tu fet.s2p]-- D1 --TLO(50,45d)-- PORT2
+!                    |                                 |
+!              STI(75,30d,open)                 STO(75,30d,short)
+!
+! Nut G1 va D1 moi co 4 chan -> netlist.py tu chen moi noi 4 cong.
+! =====================================================================
+
+FREQ START=1.0G STOP=4.0G POINTS=301
+
+PORT 1 IN
+PORT 2 OUT
+
+! --- mang phoi hop dau vao: doan day 50 ohm + stub ho mach ---
+TLINE TLI  IN  G1  Z0=50   EL=45 F0=2.4G
+STUB  STI  G1      Z0=75   EL=30 F0=2.4G TERM=open
+
+! --- transistor (khoi khong thuan nghich, lay tu file Touchstone) ---
+S2P   Q1   G1  D1  FILE=fet.s2p INTERP=ri
+
+! --- hoi tiep song song: tao vong kin bao quanh transistor ---
+RES   RFB  G1  D1  R=500
+
+! --- mang phoi hop dau ra: stub ngan mach + doan day 50 ohm ---
+STUB  STO  D1      Z0=75   EL=30 F0=2.4G TERM=short
+TLINE TLO  D1  OUT Z0=50   EL=45 F0=2.4G

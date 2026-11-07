@@ -1,0 +1,33 @@
+! =====================================================================
+! filter_lc.net - LOC THONG THAP CHEBYSHEV LC BAC 5 (CAU TRUC PI)
+! =====================================================================
+! Chebyshev 0.5 dB ripple, bac 5, fc = 1 GHz, he 50 ohm.
+! Gia tri chuan hoa g1..g5 = 1.7058 1.2296 2.5408 1.2296 1.7058
+!   C_shunt = g / (2*pi*fc*Z0)     L_series = g*Z0 / (2*pi*fc)
+!   C1 = C5 = 1.7058/(2*pi*1e9*50) = 5.4303 pF
+!   C3       = 2.5408/(2*pi*1e9*50) = 8.0878 pF
+!   L2 = L4  = 1.2296*50/(2*pi*1e9) = 9.7853 nH
+!
+!   P1 --+-- L2 --+-- L4 --+-- P2
+!        |        |        |
+!       C1       C3       C5
+!        |        |        |
+!       GND      GND      GND
+!
+! Muc dich: kiem chung phan tu TAP TRUNG (R, L, C) va duong noi dat
+! (CAP/IND mot dau xuong GND -> khoi 1 cong). Nut a, b, c moi co 3 chan
+! -> netlist.py tu chen moi noi T.
+! Dap ung mong doi: |S21| ~ 0 dB trong dai thong, ripple 0.5 dB,
+! suy giam manh > 1 GHz; |S11| = |S22| (mang doi xung, thuan nghich).
+! =====================================================================
+
+FREQ START=50M STOP=3G POINTS=301
+
+PORT 1 a
+PORT 2 c
+
+CAP C1 a 0 C=5.4303p
+IND L2 a b L=9.7853n
+CAP C3 b 0 C=8.0878p
+IND L4 b c L=9.7853n
+CAP C5 c 0 C=5.4303p

@@ -1,0 +1,33 @@
+! =====================================================================
+! branchline.net - BO GHEP BRANCH-LINE (QUADRATURE HYBRID) 3 dB, 4 CONG
+! =====================================================================
+! Bon doan day lambda/4 tai f0 = 2.4 GHz tao thanh vong kin:
+!   - hai nhanh NGANG (series arms) : Z0/sqrt(2) = 35.355 ohm
+!   - hai nhanh DOC   (shunt arms)  : Z0        = 50 ohm
+!
+!        P1 ---- TL_A (35.355) ---- P2
+!        |                           |
+!      TL_D (50)                  TL_B (50)
+!        |                           |
+!        P4 ---- TL_C (35.355) ---- P3
+!
+! Ly thuyet tai f0 (Pozar - quadrature hybrid):
+!   S = -1/sqrt(2) * [[0, j, 1, 0], [j, 0, 0, 1], [1, 0, 0, j], [0, 1, j, 0]]
+!   -> cong 2 = THANG   (|S21| = 0.7071, pha  -90 do)
+!      cong 3 = GHEP    (|S31| = 0.7071, pha -180 do) -> vuong pha voi cong 2
+!      cong 4 = CACH LY (S41 = 0);  S11 = 0 (phoi hop hoan toan)
+! Moi nut co 3 chan (1 cong ngoai + 2 doan day) -> 4 moi noi T tu dong.
+! Mang 4 cong -> kiem chung thuat toan voi so cong > 3.
+! =====================================================================
+
+FREQ START=1.4G STOP=3.4G POINTS=201
+
+PORT 1 P1
+PORT 2 P2
+PORT 3 P3
+PORT 4 P4
+
+TLINE TL_A P1 P2 Z0=35.355339 EL=90 F0=2.4G
+TLINE TL_C P4 P3 Z0=35.355339 EL=90 F0=2.4G
+TLINE TL_D P1 P4 Z0=50        EL=90 F0=2.4G
+TLINE TL_B P2 P3 Z0=50        EL=90 F0=2.4G

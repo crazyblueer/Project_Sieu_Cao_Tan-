@@ -1,0 +1,26 @@
+! =====================================================================
+! filter_stub.net - LOC THONG DAI DUNG STUB LAMBDA/4 (PHAN BO)
+! =====================================================================
+! Ba stub ngan mach lambda/4 (tai f0 = 2.4 GHz) cach nhau boi hai doan
+! day lambda/4 50 ohm. Stub ngan mach lambda/4 -> ho mach tai f0
+! (khong anh huong), nhung ngan mach tai 2*f0 va DC -> dac tuyen
+! THONG DAI quanh f0.
+!
+!   P1 --+-- TL1(50,90d) --+-- TL2(50,90d) --+-- P2
+!        |                 |                 |
+!      SB1(80,90d,short)  SB2(60,90d,short)  SB3(80,90d,short)
+!
+! Muc dich: kiem chung phan tu PHAN BO (TLINE + STUB TERM=short) tren
+! toan dai tan, va moi noi T tai 3 nut.
+! =====================================================================
+
+FREQ START=1.0G STOP=4.0G POINTS=301
+
+PORT 1 n1
+PORT 2 n3
+
+STUB  SB1 n1       Z0=80 EL=90 F0=2.4G TERM=short
+TLINE TL1 n1 n2    Z0=50 EL=90 F0=2.4G
+STUB  SB2 n2       Z0=60 EL=90 F0=2.4G TERM=short
+TLINE TL2 n2 n3    Z0=50 EL=90 F0=2.4G
+STUB  SB3 n3       Z0=80 EL=90 F0=2.4G TERM=short
