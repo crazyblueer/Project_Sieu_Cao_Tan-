@@ -1,100 +1,104 @@
 # Project_Sieu_Cao_Tan-
 """Progress (Update):
-Phase 1: z_to_s_1port: phan xa cua 1 cong (Gamma = (Z-Z0)/(Z+Z0)).
-Phase 2: z_to_s_Nport: Z->S cho N cong. Hieu: duong cheo = phan xa, ngoai cheo = truyen.
-Phase 3: tline_s + beta_l_from_freq: ma tran S cua doan duong truyen, S21 = e^{-j beta*l} (phu thuoc tan so).
-         Hieu: day ly tuong ko lam yeu song, chi quay pha; pha quay theo tan so; doan lamda/4 quay 90 do.
-Phase 4: cascade: ghep 2 khoi 2 cong noi duoi. Hieu: ghep KHAC nhan ma tran vi co vong doi qua lai;
-         mau so 1/(1-A22*B11) = tong vo han cac lan doi. Da chung minh ghep != nhan bang con so.
 
-Phase 5: connect_ports: THUAT TOAN GHEP TONG QUAT - noi cong bat ky voi cong bat ky trong 1 mang.
-         Tu duy moi: gom tat ca khoi thanh 1 ma tran lon -> noi dan tung cap cong -> ma tran co lai.
-         Khac cascade (chi noi duoi 2 cong): cai nay noi duoc song song, noi ngang, mang nhieu cong.
-         Kiem chung: lam lai Phase 4 bang connect_ports -> ra giong het cascade.
-         (Day la thuat toan "noi dan tung cap cong" ma de bai yeu cau.)
+Phase 1: z_to_s_1port: phản xạ của 1 cổng (Gamma = (Z-Z0)/(Z+Z0)).
 
-Phase 6: RAP WILKINSON hoan chinh.
-         - Them component: junction3 (noi chu T 3 cong), tline_s_general (day co Zc rieng),
-           resistor_series_s (dien tro cach ly).
-         - Gom 6 khoi (2 duong 70.7 ohm + 3 noi T + 1 dien tro) -> noi 6 cap cong -> ra S 3x3.
-         - KET QUA khop ly thuyet Wilkinson: S11=S22=S33=0, S21=S31=-0.707j, S23=0
-           (chia doi cong suat, phoi hop, cach ly).
-         - Kiem chung component tline_s_general bang scikit-rf (sau renormalize ve 50 ohm): KHOP 4 chu so.
-Phase 7: VAI A - cac ham bien doi va kiem tra ma tran (nen tang engine).
-         - z_to_s_Nport / s_to_z_Nport: doi qua lai S <-> Z.
-         - renormalize: doi tro khang tham chieu (Z0 THUC), di vong qua Z bat bien.
-           Kiem chung: doan day 70.7 ohm doi ve 50 ohm -> khop tline_general va scikit-rf.
-         - renormalize_general: ban NANG CAO, Z0 PHUC va khac nhau tung cong (power wave Kurokawa).
-           Kiem chung: khop scikit-rf (s_def='power') voi Z0 = 50+10j -> dap ung yeu cau de bai
-           "ho tro tro khang tham chieu phuc va khac nhau o tung cong".
-         - is_reciprocal / is_lossless / is_passive: kiem tra tinh chat mang (luoi an toan debug).
-           Hieu: lossless = ko mat nang luong; passive = ko tu sinh nang luong (dien tro: lossless=False, passive=True).
+Phase 2: z_to_s_Nport: Z->S cho N cổng. Hiểu: đường chéo = phản xạ, ngoài chéo = truyền.
 
-Phase 8: TICH HOP - noi parser netlist (ban B) voi engine ghep (ban+C).
-         - solve_network (solver.py): nhan blocks/connections/ext_ports tu netlist,
-           tu dong gom khoi + noi dan cac cap cong + giu lai dung cac cong ngoai theo thu tu.
-         - Xu ly phan biet EXT labels (cong ngoai) voi moi noi that.
-         - KET QUA: chay 1 netlist Wilkinson van ban -> ra S khop ly thuyet (-0.707j, 0, 0).
-           Kiem chung bang 3 ham tinh chat: reciprocal=True, passive=True, lossless=False (dung).
-         => Lan dau project chay lien mach: netlist van ban -> parser -> engine -> ma tran S.
+Phase 3: tline_s + beta_l_from_freq: ma trận S của đoạn đường truyền, S21 = e^{-j beta*l} (phụ thuộc tần số).
+         Hiểu: dây lý tưởng không làm yếu sóng, chỉ quay pha; pha quay theo tần số; đoạn lambda/4 quay 90 độ.
 
-Phase 9: THUAT TOAN THU HAI - connection matrix (connect_matrix/connect_named_matrix
-         trong engine.py), giai ca mang 1 lan bang 1 phep nghich dao ma tran
-         (Redheffer star product tong quat), thay vi noi dan tung cap nhu pairwise.
-         Da gop vao engine.py (khong con la file rieng connection_matrix.py) vi day
-         cung la mot phan cua engine ghep cong.
-         Ham tich hop solve_network_global(blocks, connections, ext) (dung
-         connect_named_matrix) nam trong solver.py, canh solve_network() (pairwise)
-         - ca hai cung vai tro "noi netlist voi engine", chi khac thuat toan noi
-         dung, nen gop chung 1 file hop ly hon de nguoi doc thay ngay 2 lua chon.
-         Kiem chung: solve_network_global khop solve_network (pairwise) toi 1e-16
-         tren Wilkinson va moi netlist khac (xem compare_algorithms.py).
+Phase 4: cascade: ghép 2 khối 2 cổng nối đuôi. Hiểu: ghép KHÁC nhân ma trận vì có vòng dội qua lại;
+         mẫu số 1/(1-A22*B11) = tổng vô hạn các lần dội. Đã chứng minh ghép != nhân bằng con số.
 
-Phase 10: PHAT HIEN & SUA BUG - connect_ports() (ban GOC) bi dao 2 he so (1-S[p,q])
-         <-> (1-S[q,p]) trong cong thuc noi dan tung cap. Bug AN HOAN TOAN tren mang
-         THUAN NGHICH (TLINE/RES/Wilkinson, S[p,q]=S[q,p]) nhung LO RO tren mang
-         KHONG thuan nghich (transistor, S12 != S21) - xem transistor_bug_demo.py.
-         Da sua thanh connect_ports_fixed() (ban CHINH THUC, dung qua connect_named()),
-         GIU LAI connect_ports() ban goc trong engine.py de doi chieu/minh hoa loi.
+Phase 5: connect_ports: THUẬT TOÁN GHÉP TỔNG QUÁT - nối cổng bất kỳ với cổng bất kỳ trong 1 mạng.
+         Tư duy mới: gộp tất cả khối thành 1 ma trận lớn -> nối dần từng cặp cổng -> ma trận co lại.
+         Khác cascade (chỉ nối đuôi 2 cổng): cái này nối được song song, nối ngang, mạng nhiều cổng.
+         Kiểm chứng: làm lại Phase 4 bằng connect_ports -> ra giống hệt cascade.
+         (Đây là thuật toán "nối dần từng cặp cổng" mà đề bài yêu cầu.)
 
-Phase 11: MONTE-CARLO DUNG SAI LINH KIEN (monte_carlo.py).
-         - Nhieu ngau nhien gia tri R/L/C cua mot netlist theo PHAN BO GAUSS
-           (sigma = tol_frac / 3, quy uoc dung sai cong bo = 3*sigma), giai
-           lai mang bang solve_network_global() (connection-matrix) tai cac
-           tan so can khao sat, lap lai N lan (trial).
-         - Thong ke |S11|/|S21| (dB) tren toan bo trial: mean/std/percentile
-           5-50-95% + ty le DAT spec (yield) -> danh gia dung sai linh kien
-           anh huong the nao den hieu nang mach thuc te (khong chi gia tri
-           ly tuong tai diem danh dinh).
-         - Da chay tren filter_lc.net (nhieu C/L +-5%) va amplifier.net
-           (nhieu dien tro hoi tiep RFB +-10%), xuat histogram PNG cho moi
-           cap tan so/chi tieu.
+Phase 6: RÁP WILKINSON hoàn chỉnh.
+         - Thêm component: junction3 (nối chữ T 3 cổng), tline_s_general (dây có Zc riêng),
+           resistor_series_s (điện trở cách ly).
+         - Gồm 6 khối (2 đường 70.7 ohm + 3 nối T + 1 điện trở) -> nối 6 cặp cổng -> ra S 3x3.
+         - KẾT QUẢ khớp lý thuyết Wilkinson: S11=S22=S33=0, S21=S31=-0.707j, S23=0
+           (chia đôi công suất, phối hợp, cách ly).
+         - Kiểm chứng component tline_s_general bằng scikit-rf (sau renormalize về 50 ohm): KHỚP 4 chữ số.
+Phase 7: VAI A - các hàm biến đổi và kiểm tra ma trận (nền tảng engine).
+         - z_to_s_Nport / s_to_z_Nport: đổi qua lại S <-> Z.
+         - renormalize: đổi trở kháng tham chiếu (Z0 THỰC), đi vòng qua Z bất biến.
+           Kiểm chứng: đoạn dây 70.7 ohm đổi về 50 ohm -> khớp tline_general và scikit-rf.
+         - renormalize_general: bản NÂNG CAO, Z0 PHỨC và khác nhau từng cổng (power wave Kurokawa).
+           Kiểm chứng: khớp scikit-rf (s_def='power') với Z0 = 50+10j -> đáp ứng yêu cầu đề bài
+           "hỗ trợ trở kháng tham chiếu phức và khác nhau ở từng cổng".
+         - is_reciprocal / is_lossless / is_passive: kiểm tra tính chất mạng (lưới an toàn debug).
+           Hiểu: lossless = không mất năng lượng; passive = không tự sinh năng lượng (điện trở: lossless=False, passive=True).
 
-CAU TRUC FILE HIEN TAI (da don gon theo nhom):
-  - engine.py        : nen tang ghep cong - connect_ports (goc, co bug, GIU lam
-                        tai lieu), connect_ports_fixed/connect_named (ban
-                        CHINH THUC da sua, pairwise), connect_matrix/
-                        connect_named_matrix (connection-matrix, giai 1 lan).
-  - components.py    : ma tran S cac phan tu vi song co ban (R/L/C, TLINE, junction3,...).
-  - netlist.py        : doc netlist van ban, goi components.py/touchstone.py, xuat
+Phase 8: TÍCH HỢP - nối parser netlist (bản B) với engine ghép (bản+C).
+         - solve_network (solver.py): nhận blocks/connections/ext_ports từ netlist,
+           tự động gộp khối + nối dần các cặp cổng + giữ lại đúng các cổng ngoài theo thứ tự.
+         - Xử lý phân biệt EXT labels (cổng ngoài) với mối nối thật.
+         - KẾT QUẢ: chạy 1 netlist Wilkinson văn bản -> ra S khớp lý thuyết (-0.707j, 0, 0).
+           Kiểm chứng bằng 3 hàm tính chất: reciprocal=True, passive=True, lossless=False (đúng).
+         => Lần đầu project chạy liền mạch: netlist văn bản -> parser -> engine -> ma trận S.
+
+Phase 9: THUẬT TOÁN THỨ HAI - connection matrix (connect_matrix/connect_named_matrix
+         trong engine.py), giải cả mạng 1 lần bằng 1 phép nghịch đảo ma trận
+         (Redheffer star product tổng quát), thay vì nối dần từng cặp như pairwise.
+         Đã gộp vào engine.py (không còn là file riêng connection_matrix.py) vì đây
+         cũng là một phần của engine ghép cổng.
+         Hàm tích hợp solve_network_global(blocks, connections, ext) (dùng
+         connect_named_matrix) nằm trong solver.py, cạnh solve_network() (pairwise)
+         - cả hai cùng vai trò "nối netlist với engine", chỉ khác thuật toán nối
+         dùng, nên gộp chung 1 file hợp lý hơn để người đọc thấy ngay 2 lựa chọn.
+         Kiểm chứng: solve_network_global khớp solve_network (pairwise) tới 1e-16
+         trên Wilkinson và mọi netlist khác (xem compare_algorithms.py).
+
+Phase 10: PHÁT HIỆN & SỬA BUG - connect_ports() (bản GỐC) bị đảo 2 hệ số (1-S[p,q])
+         <-> (1-S[q,p]) trong công thức nối dần từng cặp. Bug ẨN HOÀN TOÀN trên mạng
+         THUẬN NGHỊCH (TLINE/RES/Wilkinson, S[p,q]=S[q,p]) nhưng LỘ RÕ trên mạng
+         KHÔNG thuận nghịch (transistor, S12 != S21) - xem transistor_bug_demo.py.
+         Đã sửa thành connect_ports_fixed() (bản CHÍNH THỨC, dùng qua connect_named()),
+         GIỮ LẠI connect_ports() bản gốc trong engine.py để đối chiếu/minh họa lỗi.
+
+Phase 11: MONTE-CARLO DUNG SAI LINH KIỆN (monte_carlo.py).
+         - Nhiễu ngẫu nhiên giá trị R/L/C của một netlist theo PHÂN BỐ GAUSS
+           (sigma = tol_frac / 3, quy ước dung sai công bố = 3*sigma), giải
+           lại mạng bằng solve_network_global() (connection-matrix) tại các
+           tần số cần khảo sát, lặp lại N lần (trial).
+         - Thống kê |S11|/|S21| (dB) trên toàn bộ trial: mean/std/percentile
+           5-50-95% + tỷ lệ ĐẠT spec (yield) -> đánh giá dung sai linh kiện
+           ảnh hưởng thế nào đến hiệu năng mạch thực tế (không chỉ giá trị
+           lý tưởng tại điểm danh định).
+         - Đã chạy trên filter_lc.net (nhiễu C/L +-5%) và amplifier.net
+           (nhiễu điện trở hồi tiếp RFB +-10%), xuất histogram PNG cho mỗi
+           cặp tần số/chỉ tiêu.
+
+CẤU TRÚC FILE HIỆN TẠI (đã đơn giản hóa theo nhóm):
+  - engine.py        : nền tảng ghép cổng - connect_ports (gốc, có bug, GIỮ làm
+                        tài liệu), connect_ports_fixed/connect_named (bản
+                        CHÍNH THỨC đã sửa, pairwise), connect_matrix/
+                        connect_named_matrix (connection-matrix, giải 1 lần).
+  - components.py    : ma trận S các phần tử vi sóng cơ bản (R/L/C, TLINE, junction3,...).
+  - netlist.py        : đọc netlist văn bản, gọi components.py/touchstone.py, xuất
                         (blocks, connections, ext_ports).
-  - touchstone.py     : doc/ghi/noi suy file Touchstone .s2p.
-  - solver.py         : tich hop netlist + engine - solve_network() (pairwise,
-                        dung connect_named) va solve_network_global() (connection-
-                        matrix, dung connect_named_matrix) - ca 2 cung interface,
-                        de so sanh truc tiep (xem compare_algorithms.py).
-  - compare_algorithms.py : kiem chung cheo 3 cach (pairwise/connection-matrix/scikit-rf)
-                        tren moi netlist, va demo sai lech cua ban loi cu.
-  - transistor_bug_demo.py : demo doc lap minh hoa bug connect_ports() tren mang
-                        KHONG thuan nghich (transistor), goi thang connect_ports/
-                        connect_ports_fixed/connect_matrix tu engine.py.
-  - main.py / trial_error.py : kiem thu/draft ban dau (z_to_s, renormalize, Touchstone).
-  - monte_carlo.py    : mo phong Monte-Carlo dung sai linh kien (phan bo GAUSS),
-                        thong ke + ve histogram S11/S21 (dB), tinh yield theo spec.
-  - *.net             : cac file netlist vi du (wilkinson, branchline, filter_lc,
+  - touchstone.py     : đọc/ghi/nội suy file Touchstone .s2p.
+  - solver.py         : tích hợp netlist + engine - solve_network() (pairwise,
+                        dùng connect_named) và solve_network_global() (connection-
+                        matrix, dùng connect_named_matrix) - cả 2 cùng interface,
+                        dễ so sánh trực tiếp (xem compare_algorithms.py).
+  - compare_algorithms.py : kiểm chứng chéo 3 cách (pairwise/connection-matrix/scikit-rf)
+                        trên mỗi netlist, và demo sai lệch của bản lỗi cũ.
+  - transistor_bug_demo.py : demo độc lập minh họa bug connect_ports() trên mạng
+                        KHÔNG thuận nghịch (transistor), gọi thẳng connect_ports/
+                        connect_ports_fixed/connect_matrix từ engine.py.
+  - main.py / trial_error.py : kiểm thử/draft ban đầu (z_to_s, renormalize, Touchstone).
+  - monte_carlo.py    : mô phỏng Monte-Carlo dung sai linh kiện (phân bố GAUSS),
+                        thống kê + vẽ histogram S11/S21 (dB), tính yield theo spec.
+  - *.net             : các file netlist ví dụ (wilkinson, branchline, filter_lc,
                         filter_stub, amplifier).
 
-TODO tiep theo:
-- Quet ca dai tan (ko chi 1 diem f0) de ve do thi dap ung S theo f (da co trong
-  compare_algorithms.py qua net.freqs, co the mo rong them cho main.py).
+TODO tiếp theo:
+- Quét cả dải tần (không chỉ 1 điểm f0) để vẽ đồ thị đáp ứng S theo f (đã có trong
+  compare_algorithms.py qua net.freqs, có thể mở rộng thêm cho main.py).
 """
