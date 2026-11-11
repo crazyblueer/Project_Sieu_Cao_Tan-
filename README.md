@@ -74,6 +74,18 @@ Phase 11: MONTE-CARLO DUNG SAI LINH KIỆN (monte_carlo.py).
            (nhiễu điện trở hồi tiếp RFB +-10%), xuất histogram PNG cho mỗi
            cặp tần số/chỉ tiêu.
 
+Phase 12: QUÉT TOÀN DẢI TẦN & VẼ ĐỒ THỊ S(f) (compare_algorithms.py).
+         - plot_sweep() quét nhiều điểm tần số (không chỉ 1 điểm f0), vẽ biên độ
+           |S_ij| (dB) và pha S_ij theo tần số cho đủ cả 3 cách (pairwise/
+           connection-matrix/scikit-rf) trên mỗi netlist, chạy qua
+           run_case(max_points=None).
+         - KẾT QUẢ: xuất ảnh sweep_<ten>.png cho từng netlist (wilkinson,
+           branchline, filter_lc, filter_stub, amplifier); sai lệch pairwise
+           vs connection-matrix dưới 1e-16, so với scikit-rf dưới 1e-6 trên
+           toàn dải tần (đạt yêu cầu độ chính xác của đề bài).
+         - Chạy được với netlist bất kỳ, không cần sửa code:
+           python compare_algorithms.py <ten_file.net> [file2.net ...]
+
 CẤU TRÚC FILE HIỆN TẠI (đã đơn giản hóa theo nhóm):
   - engine.py        : nền tảng ghép cổng - connect_ports (gốc, có bug, GIỮ làm
                         tài liệu), connect_ports_fixed/connect_named (bản
@@ -97,8 +109,26 @@ CẤU TRÚC FILE HIỆN TẠI (đã đơn giản hóa theo nhóm):
                         thống kê + vẽ histogram S11/S21 (dB), tính yield theo spec.
   - *.net             : các file netlist ví dụ (wilkinson, branchline, filter_lc,
                         filter_stub, amplifier).
+TRẠNG THÁI DỰ ÁN (HIỆN TẠI DỪNG Ở ĐÂY):
+- Quét cả dải tần (không chỉ 1 điểm f0) để vẽ đồ thị đáp ứng S theo f cho
+  đủ cả 3 cách (pairwise/connection-matrix/scikit-rf) - ĐÃ XONG, xem
+  compare_algorithms.py (hàm plot_sweep(), chạy qua run_case(max_points=None)).
+- Dự án DỪNG LẠI ở bước này (Phase 12 đã hoàn tất). Monte-Carlo dung sai
+  linh kiện (Phase 11, monte_carlo.py) KHÔNG bị ảnh hưởng, vẫn thuộc tiến
+  độ chính thức.
 
-TODO tiếp theo:
-- Quét cả dải tần (không chỉ 1 điểm f0) để vẽ đồ thị đáp ứng S theo f (đã có trong
-  compare_algorithms.py qua net.freqs, có thể mở rộng thêm cho main.py).
+CẬP NHẬT GẦN ĐÂY (đồ thị quét tần số + netlist tuỳ ý):
+- plot_sweep() (compare_algorithms.py) nay vẽ PHA S_ij cho đủ cả 3 cách
+  (pairwise/conn-matrix/scikit-rf), giống panel biên độ (trước đây panel
+  pha chỉ có 1 đường pairwise). Bỏ dòng chú giải thừa trong tiêu đề panel
+  sai số pairwise-vs-conn-matrix.
+- CHẠY VỚI NETLIST TUỲ Ý (tự động sinh ảnh cho netlist bất kỳ, KHÔNG cần
+  sửa code): python compare_algorithms.py <ten_file.net> [file2.net ...]
+  run_case()/plot_sweep() không hard-code tên hay số cổng, nên MỌI file
+  .net hợp cú pháp netlist.py (FREQ/PORT + RES/CAP/IND/TLINE/MLIN/CLIN/
+  STUB/OPEN/SHORT/S2P) sẽ tự động được: kiểm chứng chéo 3 cách + vẽ PNG
+  sweep_<ten>.png. check_theory() (đối chiếu lý thuyết) chỉ biết 5 mạch
+  ví dụ có sẵn và sẽ tự bỏ qua (không lỗi) cho netlist mới; bước vẽ đồ
+  thị và kiểm chứng số vẫn chạy đầy đủ. Không truyền đối số -> vẫn chạy
+  5 netlist ví dụ như trước.
 """
