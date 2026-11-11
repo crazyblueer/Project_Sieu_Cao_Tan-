@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>Báo cáo: Bộ mô phỏng mạch tuyến tính tổng quát (S-matrix) — Siêu cao tần</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #161c2c; --panel2: #1c2436; --accent: #4fc3f7;
+    --accent2: #81c784; --warn: #ffb74d; --text: #e8eaf0; --muted: #94a0b8;
+    --border: #2a3350; --code-bg: #0b0f1a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+  }
+  header {
+    padding: 36px 6vw 24px; background: linear-gradient(135deg,#182036,#0f1420);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0 0 8px; font-size: 1.8rem; color: #fff; }
+  header p.sub { margin: 0; color: var(--muted); font-size: 1rem; }
+  nav {
+    display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 6vw;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  nav button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: .88rem;
+    transition: .15s;
+  }
+  nav button:hover { background: #22304a; }
+  nav button.active { background: var(--accent); color: #0b0f1a; font-weight: 600; border-color: var(--accent); }
+  main { padding: 28px 6vw 80px; max-width: 1200px; margin: 0 auto; }
+  section { display: none; animation: fade .25s ease; }
+  section.active { display: block; }
+  @keyframes fade { from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
+  h2 { color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-top: 36px; }
+  h3 { color: #fff; margin-top: 28px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 24px; margin: 16px 0;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+  @media (max-width: 800px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; }
+  th { background: var(--panel2); color: var(--accent); }
+  tr:nth-child(even) { background: #141a29; }
+  code, .formula {
+    background: var(--code-bg); color: #ffd54f; padding: 2px 6px; border-radius: 4px;
+    font-family: "Consolas", "Courier New", monospace; font-size: .92em;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 18px; overflow-x: auto; font-size: .86rem; color: #cfd8e8;
+  }
+  .badge { display:inline-block; padding:2px 10px; border-radius:12px; font-size:.78rem; font-weight:600; }
+  .badge.ok { background:#1b4332; color: var(--accent2); }
+  .badge.warn { background:#4a3715; color: var(--warn); }
+  .badge.info { background:#163a4f; color: var(--accent); }
+  img.fig { width: 100%; border-radius: 8px; border: 1px solid var(--border); margin-top: 10px; background:#fff; }
+  .caption { color: var(--muted); font-size: .85rem; margin-top: 6px; }
+  .progress-row { display:flex; align-items:center; gap:10px; margin:6px 0; }
+  .progress-row .label { width: 230px; flex-shrink:0; font-size:.88rem; }
+  .progress-bar { flex:1; height:10px; background:#141a29; border-radius:6px; overflow:hidden; border:1px solid var(--border);}
+  .progress-fill { height:100%; background: linear-gradient(90deg,var(--accent),var(--accent2)); }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .answer-box {
+    background: #142036; border-left: 4px solid var(--accent); border-radius: 0 10px 10px 0;
+    padding: 18px 22px; margin: 18px 0;
+  }
+  .answer-box h4 { margin-top:0; color: var(--accent); }
+  .pill-list { display:flex; flex-wrap:wrap; gap:8px; margin: 10px 0; }
+  .pill { background: var(--panel2); border:1px solid var(--border); padding:4px 10px; border-radius:14px; font-size:.82rem; color: var(--muted); }
+  footer { text-align:center; color: var(--muted); font-size: .8rem; padding: 20px 0 40px; }
+  .toggle-wrap { display:flex; align-items:center; gap:10px; margin: 14px 0; }
+  .switch { position:relative; width:46px; height:24px; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; cursor:pointer; inset:0; background:#303c58; border-radius:24px; transition:.2s; }
+  .slider:before { position:absolute; content:""; height:18px; width:18px; left:3px; bottom:3px; background:white; border-radius:50%; transition:.2s; }
+  input:checked + .slider { background: var(--accent); }
+  input:checked + .slider:before { transform: translateX(22px); }
+  #netSelect { background: var(--panel2); color: var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 10px; }
+  #netOut { white-space: pre; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Đề tài 7: Bộ mô phỏng mạch tuyến tính tổng quát (S-matrix)</h1>
+  <p class="sub">Báo cáo tổng hợp dự án siêu cao tần — thuật toán, kiểm chứng, phần mở rộng (Monte-Carlo dung sai), quét S(f)</p>
+</header>
+
+<nav id="nav">
+  <button data-tab="overview" class="active">Tổng quan</button>
+  <button data-tab="theory">Lý thuyết &amp; thuật toán</button>
+  <button data-tab="structure">Cấu trúc code</button>
+  <button data-tab="netlist">Netlist demo</button>
+  <button data-tab="verify">Kiểm chứng</button>
+  <button data-tab="montecarlo">Monte-Carlo</button>
+</nav>
+
+<main>
+
+<section id="overview" class="active">
+  <h2>Tổng quan dự án</h2>
+  <div class="card">
+    <p>Dự án xây dựng <b>thư viện tính ma trận S</b> của một mạng bất kỳ tạo từ các khối nhiều cổng
+    nối với nhau, dùng 2 thuật toán độc lập để đối chiếu: <b>nối dần từng cặp cổng</b> (pairwise,
+    Monaco &amp; Tiberio 1974) và <b>ma trận kết nối</b> (connection matrix / Redheffer star-product tổng quát).</p>
+    <div class="pill-list">
+      <span class="pill">Đầu vào: netlist văn bản (.net)</span>
+      <span class="pill">Trở kháng tham chiếu phức, khác nhau mỗi cổng</span>
+      <span class="pill">Độ chính xác &lt; 10⁻⁶ so với phần tử lý tưởng</span>
+      <span class="pill">Đối chiếu độc lập: scikit-rf</span>
+      <span class="pill">Mở rộng: Monte-Carlo dung sai</span>
+      <span class="pill">Quét toàn dải tần, vẽ S(f) (biên độ + pha)</span>
+    </div>
+  </div>
+
+  <h3>Tiến độ theo Phase (trích README.md)</h3>
+  <div class="card">
+    <div class="progress-row"><span class="label">1-4: Z→S, TLINE, cascade</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">5: connect_ports (pairwise)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">6: Ráp Wilkinson hoàn chỉnh</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">7: Biến đổi Z↔S, renormalize</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">8: Tích hợp netlist + engine</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">9: Connection-matrix (thuật toán 2)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">10: Phát hiện &amp; sửa bug connect_ports</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">11: Monte-Carlo dung sai linh kiện</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">12: Quét toàn dải tần, vẽ đồ thị S(f) (biên độ + pha, 3 cách)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">GUI vẽ sơ đồ mạch</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="badge warn">Chưa làm</span></div>
+    <div class="progress-row"><span class="label">Tối ưu hóa</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="badge warn">Chưa làm</span></div>
+    <div class="progress-row"><span class="label">Phân tích nhiễu</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="badge warn">Chưa làm</span></div>
+  </div>
+  <div class="card">
+    <p><b>Dự án hiện dừng lại ở bước vẽ đồ thị S(f)</b> (quét toàn dải tần, đối chiếu đủ cả 3 cách
+    pairwise/connection-matrix/scikit-rf, xem tab "Kiểm chứng" và các ảnh <code>sweep_*.png</code>).
+    Các phần mở rộng còn lại — <b>tối ưu hóa</b>, <b>phân tích nhiễu</b>, và <b>GUI vẽ sơ đồ mạch</b> — chưa thực hiện.</p>
+  </div>
+</section>
+<section id="theory">
+  <h2>Lý thuyết &amp; 2 thuật toán ghép cổng</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>1. Nối dần từng cặp cổng (pairwise)</h3>
+      <p>Xử lý từng cặp cổng nội bộ một lần, cập nhật ma trận S, lặp lại cho cặp tiếp theo.
+      Số lần lặp = số cặp cần nối, mỗi lần nghịch đảo cỡ 2×2.</p>
+      <pre>D       = (1-S[p,q])(1-S[q,p]) - S[p,p]S[q,q]
+S'[k,l] = S[k,l] + ( S[k,p]S[q,l](1-S[p,q])
+                   + S[k,q]S[p,l](1-S[q,p])
+                   + S[k,p]S[p,l]S[q,q]
+                   + S[k,q]S[q,l]S[p,p] ) / D</pre>
+      <p class="caption">engine.py — connect_ports_fixed() / connect_named()</p>
+    </div>
+    <div class="card">
+      <h3>2. Ma trận kết nối (connection matrix)</h3>
+      <p>Giải TẤT CẢ các cặp nối cùng lúc bằng một phép nghịch đảo ma trận duy nhất, cỡ bằng
+      số cổng nội bộ (Redheffer star-product tổng quát).</p>
+      <pre>Γ[p,q] = Γ[q,p] = 1  cho mỗi cặp nối (p,q)
+S_total = S_EE + S_EI · Γ · (I - S_II·Γ)⁻¹ · S_IE</pre>
+      <p class="caption">engine.py — connect_matrix() / connect_named_matrix()</p>
+    </div>
+  </div>
+  <div class="card">
+    <h3>So sánh độ phức tạp</h3>
+    <table>
+      <tr><th></th><th>Pairwise (nối dần)</th><th>Connection-matrix (giải 1 lần)</th></tr>
+      <tr><td>Số phép nghịch đảo</td><td>K lần, mỗi lần cỡ 2×2</td><td>1 lần, cỡ 2K×2K</td></tr>
+      <tr><td>Code</td><td>Đơn giản, dễ debug từng bước</td><td>Gọn hơn khi K lớn, vector hóa tốt bằng numpy</td></tr>
+      <tr><td>Phù hợp</td><td>Mạng ít cổng nối, debug từng khối</td><td>Mạng lớn, nhiều khối ghép cùng lúc (sweep tần số nhanh hơn)</td></tr>
+    </table>
+    <p>Kiểm chứng bằng numpy (K=2, S phức ngẫu nhiên): <b>Max abs difference: 1.48e-16</b> → hai thuật toán khớp tuyệt đối (sai lệch ở mức làm tròn số thực).</p>
+  </div>
+</section>
+
+<section id="structure">
+  <h2>Cấu trúc code (phân chia theo module)</h2>
+  <div class="card">
+    <table>
+      <tr><th>File</th><th>Vai trò</th></tr>
+      <tr><td><code>engine.py</code></td><td>Nền tảng ghép cổng — connect_ports (gốc, có bug lịch sử, GIỮ làm tài liệu), connect_ports_fixed/connect_named (bản chính thức), connect_matrix/connect_named_matrix (connection-matrix)</td></tr>
+      <tr><td><code>components.py</code></td><td>Ma trận S các phần tử vi sóng: R/L/C, TLINE, MLIN (microstrip), CLIN (coupled line), STUB, OPEN/SHORT, junction_n, renormalize (Z0 phức khác nhau mỗi cổng)</td></tr>
+      <tr><td><code>netlist.py</code></td><td>Đọc netlist văn bản (.net), gọi components.py/touchstone.py, xuất (blocks, connections, ext_ports)</td></tr>
+      <tr><td><code>touchstone.py</code></td><td>Đọc/ghi/nội suy file Touchstone .s2p</td></tr>
+      <tr><td><code>solver.py</code></td><td>solve_network() (pairwise) &amp; solve_network_global() (connection-matrix) — cùng interface để so sánh trực tiếp</td></tr>
+      <tr><td><code>compare_algorithms.py</code></td><td>Kiểm chứng chéo 3 cách: pairwise / connection-matrix / scikit-rf (tham chiếu độc lập)</td></tr>
+      <tr><td><code>transistor_bug_demo.py</code></td><td>Demo độc lập minh họa bug connect_ports() trên mạng KHÔNG thuận nghịch</td></tr>
+      <tr><td><code>monte_carlo.py</code></td><td>Mô phỏng Monte-Carlo dung sai linh kiện (phân bố Gauss), thống kê + histogram</td></tr>
+      <tr><td><code>*.net</code></td><td>Netlist ví dụ: wilkinson, branchline, filter_lc, filter_stub, amplifier</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="netlist">
+  <h2>Netlist demo (xem trực tiếp nội dung .net)</h2>
+  <div class="card">
+    <div class="toggle-wrap">
+      <label for="netSelect">Chọn netlist:</label>
+      <select id="netSelect">
+        <option value="amplifier">amplifier.net (tầng khuếch đại, hồi tiếp RFB, KHÔNG thuận nghịch)</option>
+        <option value="wilkinson">wilkinson.net (chia công suất Wilkinson 3 cổng)</option>
+        <option value="branchline">branchline.net (bộ ghép branch-line 3dB, 4 cổng)</option>
+        <option value="filter_lc">filter_lc.net (lọc thông thấp Chebyshev LC bậc 5)</option>
+        <option value="filter_stub">filter_stub.net (lọc thông dải dùng stub λ/4)</option>
+      </select>
+    </div>
+    <pre id="netOut"></pre>
+  </div>
+</section>
+
+<section id="verify">
+  <h2>Kiểm chứng kết quả</h2>
+  <div class="grid3">
+    <div class="card">
+      <h3>(a) Pairwise vs Connection-matrix</h3>
+      <p>Khớp tới <code>1e-16</code> trên mọi netlist (wilkinson, filter_lc, filter_stub, amplifier, branchline).</p>
+      <span class="badge ok">PASS</span>
+    </div>
+    <div class="card">
+      <h3>(b) vs scikit-rf (tham chiếu độc lập)</h3>
+      <p>Sai lệch &lt; <code>10⁻⁶</code> yêu cầu đề bài cho phần tử lý tưởng.</p>
+      <span class="badge ok">PASS</span>
+    </div>
+    <div class="card">
+      <h3>(c) Quét toàn dải tần — S(f)</h3>
+      <p>plot_sweep() (compare_algorithms.py) vẽ biên độ |S_ij| (dB) và pha S_ij theo tần số cho đủ cả 3
+      cách (pairwise/connection-matrix/scikit-rf) trên mọi netlist nhiều điểm tần số. Xem các đồ thị
+      <code>sweep_*.png</code> bên dưới.</p>
+      <span class="badge ok">PASS</span>
+    </div>
+  </div>
+  <h3>Đồ thị quét dải tần S(f) cho từng netlist</h3>
+  <div class="card">
+    <p><code>wilkinson.net</code> chỉ có 1 điểm tần số (POINTS=1, đánh giá tại 2.4 GHz) nên không quét
+    dải tần — không có đồ thị sweep cho netlist này.</p>
+  </div>
+  <div class="grid2">
+    <div>
+      <img class="fig" src="sweep_amplifier.png" alt="Sweep amplifier">
+      <p class="caption">amplifier.net — biên độ &amp; pha S(f), 1.0–4.0 GHz, 301 điểm (3 cách đối chiếu)</p>
+    </div>
+    <div>
+      <img class="fig" src="sweep_branchline.png" alt="Sweep branchline">
+      <p class="caption">branchline.net — biên độ &amp; pha S(f), 1.4–3.4 GHz, 201 điểm (3 cách đối chiếu)</p>
+    </div>
+    <div>
+      <img class="fig" src="sweep_filter_lc.png" alt="Sweep filter LC">
+      <p class="caption">filter_lc.net — biên độ &amp; pha S(f), 50 MHz–3 GHz, 301 điểm (3 cách đối chiếu)</p>
+    </div>
+    <div>
+      <img class="fig" src="sweep_filter_stub.png" alt="Sweep filter stub">
+      <p class="caption">filter_stub.net — biên độ &amp; pha S(f), 1.0–4.0 GHz, 301 điểm (3 cách đối chiếu)</p>
+    </div>
+  </div>
+</section>
+
+<section id="montecarlo">
+  <h2>Monte-Carlo dung sai linh kiện (phần mở rộng #1)</h2>
+  <div class="card">
+    <p>Ngẫu nhiên hóa giá trị R/L/C theo <b>phân bố Gauss</b> quanh giá trị danh định
+    (dung sai công bố ±X% ⇔ ±3σ), giải lại mạng bằng <code>solve_network_global()</code>
+    tại từng trial, thống kê |S11|/|S21| (dB): mean/std/percentile 5-50-95% + tỷ lệ đạt spec (yield).</p>
+    <div class="grid2">
+      <div>
+        <img class="fig" src="monte_carlo_amplifier.png" alt="Monte Carlo amplifier">
+        <p class="caption">amplifier.net — nhiễu điện trở hồi tiếp RFB ±10%</p>
+      </div>
+      <div>
+        <img class="fig" src="monte_carlo_filter_lc.png" alt="Monte Carlo filter LC">
+        <p class="caption">filter_lc.net — nhiễu C/L ±5%</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>Báo cáo tự động tổng hợp từ README.md, compare_algorithms.py, monte_carlo.py, *.net và các ảnh kết quả trong thư mục SCT.</footer>
+
+<script>
+  const buttons = document.querySelectorAll('nav button');
+  const sections = document.querySelectorAll('main section');
+  buttons.forEach(b => b.addEventListener('click', () => {
+    buttons.forEach(x => x.classList.remove('active'));
+    sections.forEach(s => s.classList.remove('active'));
+    b.classList.add('active');
+    document.getElementById(b.dataset.tab).classList.add('active');
+  }));
+
+  const netlists = {
+    amplifier: `! =====================================================================
+! amplifier.net - TANG KHUECH DAI TRANSISTOR CO HOI TIEP (KHONG THUAN NGHICH)
+! =====================================================================
+! Transistor doc tu fet.s2p (mo hinh FET tin hieu nho, |S21/S12| ~ 40..160 lan
+! -> KHONG thuan nghich ro ret).
+!
+! Topo:
+!                    +--------- RFB (500 ohm) ---------+
+!                    |                                 |
+!   PORT1 --TLI(50,45d)-- G1 --[Q1: FET tu fet.s2p]-- D1 --TLO(50,45d)-- PORT2
+!                    |                                 |
+!              STI(75,30d,open)                 STO(75,30d,short)
+
+FREQ START=1.0G STOP=4.0G POINTS=301
+
+PORT 1 IN
+PORT 2 OUT
+
+TLINE TLI  IN  G1  Z0=50   EL=45 F0=2.4G
+STUB  STI  G1      Z0=75   EL=30 F0=2.4G TERM=open
+
+S2P   Q1   G1  D1  FILE=fet.s2p INTERP=ri
+
+RES   RFB  G1  D1  R=500
+
+STUB  STO  D1      Z0=75   EL=30 F0=2.4G TERM=short
+TLINE TLO  D1  OUT Z0=50   EL=45 F0=2.4G`,
+    wilkinson: `FREQ START=2.4G STOP=2.4G POINTS=1
+PORT 1 IN
+PORT 2 OUT1
+PORT 3 OUT2
+TLINE TL1 IN OUT1 Z0=70.71 EL=90 F0=2.4G
+TLINE TL2 IN OUT2 Z0=70.71 EL=90 F0=2.4G
+RES R1 OUT1 OUT2 R=100`,
+    branchline: `! =====================================================================
+! branchline.net - BO GHEP BRANCH-LINE (QUADRATURE HYBRID) 3 dB, 4 CONG
+! =====================================================================
+! Bon doan day lambda/4 tai f0 = 2.4 GHz tao thanh vong kin:
+!   - hai nhanh NGANG (series arms) : Z0/sqrt(2) = 35.355 ohm
+!   - hai nhanh DOC   (shunt arms)  : Z0        = 50 ohm
+!
+!        P1 ---- TL_A (35.355) ---- P2
+!        |                           |
+!      TL_D (50)                  TL_B (50)
+!        |                           |
+!        P4 ---- TL_C (35.355) ---- P3
+!
+! Ly thuyet tai f0 (Pozar - quadrature hybrid):
+!   S = -1/sqrt(2) * [[0, j, 1, 0], [j, 0, 0, 1], [1, 0, 0, j], [0, 1, j, 0]]
+!   -> cong 2 = THANG   (|S21| = 0.7071, pha  -90 do)
+!      cong 3 = GHEP    (|S31| = 0.7071, pha -180 do) -> vuong pha voi cong 2
+!      cong 4 = CACH LY (S41 = 0);  S11 = 0 (phoi hop hoan toan)
+! Moi nut co 3 chan (1 cong ngoai + 2 doan day) -> 4 moi noi T tu dong.
+! Mang 4 cong -> kiem chung thuat toan voi so cong > 3.
+! =====================================================================
+
+FREQ START=1.4G STOP=3.4G POINTS=201
+
+PORT 1 P1
+PORT 2 P2
+PORT 3 P3
+PORT 4 P4
+
+TLINE TL_A P1 P2 Z0=35.355339 EL=90 F0=2.4G
+TLINE TL_C P4 P3 Z0=35.355339 EL=90 F0=2.4G
+TLINE TL_D P1 P4 Z0=50        EL=90 F0=2.4G
+TLINE TL_B P2 P3 Z0=50        EL=90 F0=2.4G`,
+    filter_lc: `! =====================================================================
+! filter_lc.net - LOC THONG THAP CHEBYSHEV LC BAC 5 (CAU TRUC PI)
+! =====================================================================
+! Chebyshev 0.5 dB ripple, bac 5, fc = 1 GHz, he 50 ohm.
+! Gia tri chuan hoa g1..g5 = 1.7058 1.2296 2.5408 1.2296 1.7058
+!   C_shunt = g / (2*pi*fc*Z0)     L_series = g*Z0 / (2*pi*fc)
+!   C1 = C5 = 1.7058/(2*pi*1e9*50) = 5.4303 pF
+!   C3       = 2.5408/(2*pi*1e9*50) = 8.0878 pF
+!   L2 = L4  = 1.2296*50/(2*pi*1e9) = 9.7853 nH
+!
+!   P1 --+-- L2 --+-- L4 --+-- P2
+!        |        |        |
+!       C1       C3       C5
+!        |        |        |
+!       GND      GND      GND
+!
+! Muc dich: kiem chung phan tu TAP TRUNG (R, L, C) va duong noi dat
+! (CAP/IND mot dau xuong GND -> khoi 1 cong). Nut a, b, c moi co 3 chan
+! -> netlist.py tu chen moi noi T.
+! Dap ung mong doi: |S21| ~ 0 dB trong dai thong, ripple 0.5 dB,
+! suy giam manh > 1 GHz; |S11| = |S22| (mang doi xung, thuan nghich).
+! =====================================================================
+
+FREQ START=50M STOP=3G POINTS=301
+
+PORT 1 a
+PORT 2 c
+
+CAP C1 a 0 C=5.4303p
+IND L2 a b L=9.7853n
+CAP C3 b 0 C=8.0878p
+IND L4 b c L=9.7853n
+CAP C5 c 0 C=5.4303p`,
+    filter_stub: `! =====================================================================
+! filter_stub.net - LOC THONG DAI DUNG STUB LAMBDA/4 (PHAN BO)
+! =====================================================================
+! Ba stub ngan mach lambda/4 (tai f0 = 2.4 GHz) cach nhau boi hai doan
+! day lambda/4 50 ohm. Stub ngan mach lambda/4 -> ho mach tai f0
+! (khong anh huong), nhung ngan mach tai 2*f0 va DC -> dac tuyen
+! THONG DAI quanh f0.
+!
+!   P1 --+-- TL1(50,90d) --+-- TL2(50,90d) --+-- P2
+!        |                 |                 |
+!      SB1(80,90d,short)  SB2(60,90d,short)  SB3(80,90d,short)
+!
+! Muc dich: kiem chung phan tu PHAN BO (TLINE + STUB TERM=short) tren
+! toan dai tan, va moi noi T tai 3 nut.
+! =====================================================================
+
+FREQ START=1.0G STOP=4.0G POINTS=301
+
+PORT 1 n1
+PORT 2 n3
+
+STUB  SB1 n1       Z0=80 EL=90 F0=2.4G TERM=short
+TLINE TL1 n1 n2    Z0=50 EL=90 F0=2.4G
+STUB  SB2 n2       Z0=60 EL=90 F0=2.4G TERM=short
+TLINE TL2 n2 n3    Z0=50 EL=90 F0=2.4G
+STUB  SB3 n3       Z0=80 EL=90 F0=2.4G TERM=short`
+  };
+  const sel = document.getElementById('netSelect');
+  const out = document.getElementById('netOut');
+  function render() { out.textContent = netlists[sel.value]; }
+  sel.addEventListener('change', render);
+  render();
+</script>
+
+</body>
+</html>
