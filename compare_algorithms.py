@@ -1,22 +1,32 @@
 """
-compare_algorithms.py - Double-check 3 cách tính ma trận S:
+compare_algorithms.py - KIỂM CHỨNG CHÉO 3 CÁCH TÍNH MA TRẬN S
 
+So sánh trên MỌI file netlist có trong thư mục:
   (A) pairwise      : solve_network()        - nối dần từng cặp cổng (engine.py)
   (B) conn-matrix   : solve_network_global() - ma trận kết nối (solver.py, dùng connect_named_matrix của engine.py)
-  (C) scikit-rf     : rf.Circuit             - tham chieu doc lap
+  (C) scikit-rf     : rf.Circuit             - tham chiếu độc lập
 
 Cách (C) dùng ngay netlist đã parse: mỗi linh kiện được dựng lại bằng
 primitive của scikit-rf (DefinedGammaZ0.line / delay_open / delay_short /
-capacitor / inductor / Network từ file .s2p), rồi nối theo đúng topo nút
-của netlist bằng rf.Circuit. Vì vậy (C) không dùng bất kì module nào của
-engine.py / solver.py --> là tham chiếu độc lập để so sánh.
+capacitor / inductor / Network từ file .s2p), rồi nối theo ĐÚNG topo nút
+của netlist bằng rf.Circuit. Vì vậy (C) không dùng bất kỳ mã nào của
+engine.py / solver.py -> là tham chiếu thật sự độc lập.
 
-Chay:  python compare_algorithms.py
+Chạy (5 netlist ví dụ có sẵn): python compare_algorithms.py
+Chạy với netlist TUỲ Ý (bất kỳ file .net nào, không cần sửa code):
+         python compare_algorithms.py my_circuit.net [file2.net ...]
+         -> vẫn chạy đầy đủ (A)/(B)/(C) + vẽ sweep_<ten>.png cho mỗi file
+         truyền vào; check_theory() chỉ in đối chiếu lý thuyết cho 5 tên
+         ví dụ có sẵn, netlist mới sẽ được BỎ QUA bước này (không lỗi).
 """
 
 import os
+import sys
 import time
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import skrf as rf
 from skrf.media import DefinedGammaZ0
@@ -28,13 +38,15 @@ from solver import solve_network, solve_network_global
 
 def _resolve_circuit():
     """
-    Lấy class Circuit của scikit-rf.
+    Lấy class Circuit của scikit-rf một cách bền vững.
 
-    Lý do: tùy version, class Circuit có thể không được re-export ở namespace
-    cấp cao (`skfr.Circuit`) dù module `skrf.circuit` vẫn tồn tại. Vì vậy thử lần lượt:
-      1) skrf.Circuit            (normally)
+    Lý do: tùy bản cài / tùy cách đóng gói, class Circuit có thể KHÔNG được
+    re-export ở namespace cấp cao (`skrf.Circuit`) dù module `skrf.circuit`
+    vẫn tồn tại. Vì vậy thử lần lượt:
+      1) skrf.Circuit            (đường đi thông thường)
       2) skrf.circuit.Circuit    (import trực tiếp từ submodule)
-    Nếu cả hai đều failed -> raise error.
+    Nếu cả hai thất bại -> báo lỗi KÈM THÔNG TIN CHẨN ĐOÁN (đường dẫn gói
+    đang được nạp + version) để biết ngay là gói bị che hay cài thiếu.
     """
     circuit_cls = getattr(rf, 'Circuit', None)
     if circuit_cls is not None:
@@ -59,11 +71,7 @@ def _resolve_circuit():
 
 Circuit = _resolve_circuit()
 
-from components import is_lossless, is_passive, is_reciprocal, to_si
-from netlist import GND_NAMES, read_netlist
-from solver import solve_network, solve_network_global
-
-TOL = 1e-6          # nguong "khop" cho phan tu ly tuong (yeu cau de bai)
+TOL = 1e-6          # ngưỡng "khớp" cho phần tử lý tưởng (yêu cầu đề bài)
 Z0 = 50.0
 
 
@@ -73,9 +81,9 @@ Z0 = 50.0
 
 def _media(frequency, theta_deg_at_f, z0_line):
     """
-    Moi truong TEM khong tan sac co do dai dien theta(f) = theta0 * f/f0.
-    Dung gamma = 1j*theta(f) voi chieu dai d = 1 m -> gamma*d = 1j*theta(f),
-    giong beta_l_from_freq() cua components.py.
+    Môi trường TEM không tán sắc có độ dài điện theta(f) = theta0 * f/f0.
+    Dùng gamma = 1j*theta(f) với chiều dài d = 1 m -> gamma*d = 1j*theta(f),
+    giống beta_l_from_freq() của components.py.
     """
     return DefinedGammaZ0(frequency=frequency, z0_port=Z0, z0=z0_line,
                           gamma=1j * theta_deg_at_f)
@@ -83,13 +91,13 @@ def _media(frequency, theta_deg_at_f, z0_line):
 
 def build_skrf_circuit(net, freqs):
     """
-    Dung lai mach tu doi tuong netlist bang scikit-rf.
-    Tra ve rf.Circuit da noi day du (ke ca cac cong ngoai).
+    Dựng lại mạch từ đối tượng netlist bằng scikit-rf.
+    Trả về rf.Circuit đã nối đầy đủ (kể cả các cổng ngoài).
 
-    Quy uoc noi: moi NUT cua netlist thanh mot 'intersection' cua Circuit,
-    gom tat ca cac (network, port_index) cam vao nut do. Nut dat dung
-    rf.Circuit.Ground. Cach nay tuong duong voi viec netlist.py chen moi
-    noi ly tuong N cong, nhung do scikit-rf tu lo -> doc lap hoan toan.
+    Quy ước nối: mỗi NÚT của netlist thành một 'intersection' của Circuit,
+    gồm tất cả các (network, port_index) cắm vào nút đó. Nút đất dùng
+    rf.Circuit.Ground. Cách này tương đương với việc netlist.py chèn mối
+    nối lý tưởng N cổng, nhưng do scikit-rf tự lo -> độc lập hoàn toàn.
     """
     frequency = rf.Frequency.from_f(np.asarray(freqs, dtype=float), unit='hz')
     f = np.asarray(freqs, dtype=float)
@@ -113,7 +121,7 @@ def build_skrf_circuit(net, freqs):
                 ntwk = med.capacitor(val, name=name)
             else:
                 ntwk = med.inductor(val, name=name)
-            # linh kien noi tiep 2 cong; neu mot dau xuong dat -> noi vao Ground
+            # linh kiện nối tiếp 2 cổng; nếu một đầu xuống đất -> nối vào Ground
             for k, node in enumerate(nodes):
                 if gnd[k]:
                     gnd_count += 1
@@ -158,9 +166,9 @@ def build_skrf_circuit(net, freqs):
             add(nodes[0], med.short(name=name), 0)
             continue
 
-        raise NotImplementedError(f"tham chieu scikit-rf chua ho tro {t}")
+        raise NotImplementedError(f"tham chiếu scikit-rf chưa hỗ trợ {t}")
 
-    # Cong ngoai -> rf.Circuit.Port, dat theo thu tu P1, P2, ...
+    # Cổng ngoài -> rf.Circuit.Port, đặt theo thứ tự P1, P2, ...
     port_of_ntwk = {}
     for port_num, node in sorted(net.external_ports.items()):
         port = Circuit.Port(frequency, name=f'port{port_num}', z0=Z0)
@@ -171,27 +179,32 @@ def build_skrf_circuit(net, freqs):
     _ = gnd_count
     circuit = Circuit(connections)
 
-    # QUAN TRONG: rf.Circuit sap xep cac cong ngoai theo THU TU XUAT HIEN trong
-    # danh sach 'connections' (xem Circuit.port_indexes), KHONG theo ten cong.
-    # Thu tu nut cua ta phu thuoc thu tu khai bao linh kien trong netlist
-    # (vd branchline.net cho ra P1,P2,P4,P3) nen phai hoan vi ket qua ve dung
-    # thu tu PORT 1..N da khai bao trong netlist, neu khong se bi "lech" gia
-    # tao dung bang mot phep doi cho cong.
+    # QUAN TRỌNG: rf.Circuit sắp xếp các cổng ngoài theo THỨ TỰ XUẤT HIỆN trong
+    # danh sách 'connections' (xem Circuit.port_indexes), KHÔNG theo tên cổng.
+    # Thứ tự nút của ta phụ thuộc thứ tự khai báo linh kiện trong netlist
+    # (vd branchline.net cho ra P1,P2,P4,P3) nên phải hoán vị kết quả về đúng
+    # thứ tự PORT 1..N đã khai báo trong netlist, nếu không sẽ bị "lệch" giả
+    # tạo đúng bằng một phép đổi chỗ cổng.
     appear = [port_of_ntwk[id(ntwk)]
               for pins in connections for (ntwk, _) in pins
               if id(ntwk) in port_of_ntwk]
-    perm = np.argsort(appear)        # perm[k] = chi so trong S cua skrf <- PORT k+1
+    perm = np.argsort(appear)        # perm[k] = chỉ số trong S của skrf <- PORT k+1
     return circuit, perm
 
 
 # =====================================================================
-# 2. CHẠY 1 NETLIST QUA CẢ 3 CÁCH
+# 2. CHẠY MỘT NETLIST QUA CẢ 3 CÁCH
 # =====================================================================
 
 def run_case(netfile, max_points=None, verbose=True):
     """
-    Tra ve dict ket qua: ma tran S cua 3 cach + sai khac + thoi gian.
-    max_points: gioi han so diem tan so (de chay nhanh); None = dung het.
+    Trả về dict kết quả: ma trận S của 3 cách + sai khác + thời gian.
+    max_points: giới hạn số điểm tần số (để chạy nhanh); None = dùng hết.
+
+    HOÀN TOÀN TỔNG QUÁT: netfile có thể là BẤT KỲ file .net nào (không chỉ
+    5 ví dụ có sẵn trong thư mục), chỉ cần đúng cú pháp netlist.py (FREQ,
+    PORT, các phần tử RES/CAP/IND/TLINE/MLIN/CLIN/STUB/OPEN/SHORT/S2P). Đây
+    là hàm được gọi lại bởi plot_sweep() bên dưới để tự động vẽ PNG.
     """
     net = read_netlist(netfile)
     freqs = net.freqs
@@ -246,7 +259,7 @@ def run_case(netfile, max_points=None, verbose=True):
         print(f"  thoi gian: pairwise {t_pair:.3f}s | conn-matrix {t_glob:.3f}s "
               f"| scikit-rf {t_skrf:.3f}s")
 
-        # in ma tran S tai tan so giua dai de xem truc quan
+        # in ma trận S tại tần số giữa dải để xem trực quan
         k = nf // 2
         print(f"\n  S tai f = {freqs[k] / 1e9:.4g} GHz (cach A - pairwise):")
         for row in np.round(S_pair[k], 5):
@@ -263,7 +276,7 @@ def run_case(netfile, max_points=None, verbose=True):
 # =====================================================================
 
 def check_theory(res):
-    """Doi chieu voi gia tri ly thuyet da biet cua tung mach (neu co)."""
+    """Đối chiếu với giá trị lý thuyết đã biết của từng mạch (nếu có)."""
     name, S, freqs = res['name'], res['S_pair'], res['freqs']
     k0 = int(np.argmin(np.abs(freqs - 2.4e9)))
 
@@ -278,13 +291,13 @@ def check_theory(res):
 
     elif name == 'branchline.net':
         s = S[k0]
-        # Ma tran ly thuyet chuan (Pozar, Microwave Engineering, quadrature hybrid):
+        # Ma trận lý thuyết chuẩn (Pozar, Microwave Engineering, quadrature hybrid):
         #   S = -1/sqrt(2) * [[0, j, 1, 0],
         #                     [j, 0, 0, 1],
         #                     [1, 0, 0, j],
         #                     [0, 1, j, 0]]
-        # Voi topo cua branchline.net: cong 1 = vao, cong 2 = THANG (-90 do),
-        # cong 3 = GHEP (-180 do), cong 4 = CACH LY.
+        # Với topo của branchline.net: cổng 1 = vào, cổng 2 = THẲNG (-90 độ),
+        # cổng 3 = GHÉP (-180 độ), cổng 4 = CÁCH LY.
         r2 = 1 / np.sqrt(2)
         exp = -r2 * np.array([[0, 1j, 1, 0],
                               [1j, 0, 0, 1],
@@ -310,7 +323,7 @@ def check_theory(res):
         print(f"  [LY THUYET] LPF Chebyshev bac 5: ripple dai thong "
               f"(f<=0.9GHz) = {ripple_db:.3f} dB (thiet ke 0.5 dB), "
               f"suy giam f>=2GHz >= {att_db:.1f} dB")
-        # kiem tra khong ton hao: |S11|^2 + |S21|^2 = 1 (chi co L, C)
+        # kiểm tra không tổn hao: |S11|^2 + |S21|^2 = 1 (chỉ có L, C)
         uni = np.abs(np.abs(S[:, 0, 0]) ** 2 + np.abs(S[:, 1, 0]) ** 2 - 1).max()
         print(f"              kiem tra khong ton hao |S11|^2+|S21|^2-1: "
               f"max = {uni:.3e}")
@@ -339,15 +352,186 @@ def check_theory(res):
 
 
 # =====================================================================
+# 3b. QUÉT TOÀN DẢI: VẼ ĐỒ THỊ S(f) (biên độ dB + pha) cho CẢ 3 CÁCH
+# =====================================================================
+
+# Các mốc đơn vị tần số (Hz), từ lớn đến nhỏ, dùng để tự động chọn đơn vị
+# "dễ đọc" (kHz/MHz/GHz/THz) thay cho ký hiệu khoa học (vd 5e8 -> 500 MHz).
+_FREQ_UNITS = [(1e12, "THz"), (1e9, "GHz"), (1e6, "MHz"), (1e3, "kHz")]
+
+
+def _fmt_freq(f_hz, sig=3):
+    """Đổi 1 giá trị tần số (Hz) thành chuỗi dễ đọc, vd 5e8 -> '500 MHz'."""
+    f_hz = abs(float(f_hz))
+    if f_hz <= 0:
+        return "0 Hz"
+    for scale, unit in _FREQ_UNITS:
+        if f_hz >= scale:
+            return f"{f_hz / scale:.{sig}g} {unit}"
+    return f"{f_hz:.{sig}g} Hz"
+
+
+def _pick_freq_unit(freqs):
+    """
+    Chọn 1 đơn vị CHUNG (kHz/MHz/GHz/THz) cho CẢ trục tần số, dựa trên giá
+    trị tần số lớn nhất trong dải quét - để trục x hiển thị số "dễ đọc"
+    (vd 0.5, 1.0, 2.0 GHz) thay vì ký hiệu khoa học như 5e8, 5e11.
+
+    Trả về (scale, ten_don_vi): chia freqs/scale để được giá trị theo
+    tên_đơn_vị.
+    """
+    f_max = float(np.max(np.abs(freqs)))
+    for scale, unit in _FREQ_UNITS:
+        if f_max >= scale:
+            return scale, unit
+    return 1.0, "Hz"
+
+
+def plot_sweep(res, outdir='.'):
+    """
+    Vẽ biên độ |S_ij| (dB) và pha S_ij (độ) theo tần số, dùng KẾT QUẢ ĐÃ
+    CÓ sẵn trong dict res (trả về từ run_case() với max_points=None -> quét
+    TOÀN DẢI tần số của netlist, đúng ý Phase TODO của README.md).
+
+    Lưới 2x2:
+      - [0,0] Biên độ: pairwise (nét liền) vs conn-matrix (nét đứt ĐEN)
+        vs scikit-rf (marker 'o', thưa điểm để đối chiếu bằng mắt).
+      - [0,1] Pha S_ij: pairwise (nét liền) vs conn-matrix (nét đứt ĐEN)
+        vs scikit-rf (marker 'o', thưa điểm) - cùng quy ước màu/nét như
+        panel biên độ.
+      - [1,0] Sai số |pairwise - conn-matrix| (log) - lý do 2 đường ở [0,0]
+        chồng khít hoàn toàn: sai lệch thực tế chỉ ở mức 1e-6 hoặc nhỏ hơn.
+      - [1,1] Sai số |conn-matrix - scikit-rf| (log) - đối chiếu ĐỘC LẬP
+        với scikit-rf (tham chiếu bên ngoài, không dùng mã của engine.py).
+
+    Trục tần số dùng 1 đơn vị CHUNG dễ đọc (kHz/MHz/GHz/THz, tự động chọn
+    theo _pick_freq_unit) thay vì ký hiệu khoa học kiểu 5e8, 5e11.
+
+    Netlist chỉ có 1 điểm tần số (wilkinson.net, POINTS=1) được BỎ QUA vì
+    không có gì để "quét" theo f.
+
+    Lưu: outdir/sweep_<ten_netlist_khong_duoi>.png
+
+    HOÀN TOÀN TỔNG QUÁT: hàm này chỉ dùng dữ liệu đã có trong res (từ
+    run_case()), không giả định gì về TÊN hay SỐ CỔNG của netlist -> áp
+    dụng được cho BẤT KỲ netlist nào đọc được bởi netlist.read_netlist().
+    Xem hướng dẫn chạy ở đầu file (vd: python compare_algorithms.py
+    my_circuit.net) để tự động gen PNG cho netlist mới, KHÔNG cần sửa code.
+    """
+    name = res['name']
+    freqs = res['freqs']
+    S_pair, S_glob, S_skrf = res['S_pair'], res['S_glob'], res['S_skrf']
+    nf, n_ports, _ = S_pair.shape
+
+    if nf < 2:
+        print(f"  [BO QUA VE DO THI] {name}: chi co {nf} diem tan so (POINTS=1), "
+              f"khong du de quet ve S(f)")
+        return None
+
+    scale, unit = _pick_freq_unit(freqs)
+    f_plot = freqs / scale
+    step = max(nf // 25, 1)          # mật độ marker scikit-rf đối chiếu
+
+    fig, ((ax_mag, ax_ph), (ax_err1, ax_err2)) = plt.subplots(2, 2, figsize=(13, 10))
+    cmap = plt.get_cmap('tab10')
+    pairs = [(i, j) for i in range(n_ports) for j in range(n_ports)]
+
+    for k, (i, j) in enumerate(pairs):
+        c = cmap(k % 10)
+        lbl = f"S{i + 1}{j + 1}"
+
+        mag_a = 20 * np.log10(np.maximum(np.abs(S_pair[:, i, j]), 1e-12))
+        mag_b = 20 * np.log10(np.maximum(np.abs(S_glob[:, i, j]), 1e-12))
+        mag_c = 20 * np.log10(np.maximum(np.abs(S_skrf[::step, i, j]), 1e-12))
+        # pairwise: nét liền, màu theo từng S_ij
+        ax_mag.plot(f_plot, mag_a, color=c, lw=2.2, alpha=0.9, label=lbl)
+        # conn-matrix: nét đứt MÀU ĐEN, nét đậm + dash dài để "nổi" rõ
+        # trên nét liền (thay vì dùng cùng màu nhạt nên chồng khít vô hình)
+        ax_mag.plot(f_plot, mag_b, color='k', lw=1.1, ls=(0, (7, 4)),
+                    alpha=0.8, zorder=5)
+        ax_mag.plot(f_plot[::step], mag_c, 'o', color=c, ms=3.5, mfc='none', mew=1.0)
+
+        ph_a = np.unwrap(np.angle(S_pair[:, i, j])) * 180.0 / np.pi
+        ph_b = np.unwrap(np.angle(S_glob[:, i, j])) * 180.0 / np.pi
+        ph_c = np.unwrap(np.angle(S_skrf[::step, i, j])) * 180.0 / np.pi
+        # pairwise: nét liền, màu theo từng S_ij (giống panel biên độ)
+        ax_ph.plot(f_plot, ph_a, color=c, lw=2.2, alpha=0.9, label=lbl)
+        # conn-matrix: nét đứt MÀU ĐEN (giống panel biên độ)
+        ax_ph.plot(f_plot, ph_b, color='k', lw=1.1, ls=(0, (7, 4)),
+                   alpha=0.8, zorder=5)
+        ax_ph.plot(f_plot[::step], ph_c, 'o', color=c, ms=3.5, mfc='none', mew=1.0)
+
+        # (1) Sai lệch thực tế giữa pairwise và conn-matrix (chính là lý do
+        # 2 đường ở biên độ bị chồng khít: sai lệch ở mức ~1e-6 hoặc nhỏ hơn)
+        err_ab = np.maximum(np.abs(S_pair[:, i, j] - S_glob[:, i, j]), 1e-16)
+        ax_err1.semilogy(f_plot, err_ab, color=c, lw=1.4, label=lbl)
+
+        # (2) Sai lệch giữa conn-matrix và scikit-rf (tham chiếu ĐỘC LẬP,
+        # không dùng lại mã nguồn của engine.py/solver.py)
+        err_bc = np.maximum(np.abs(S_glob[:, i, j] - S_skrf[:, i, j]), 1e-16)
+        ax_err2.semilogy(f_plot, err_bc, color=c, lw=1.4, label=lbl)
+
+    ax_mag.set_xlabel(f"Tần số ({unit})")
+    ax_mag.set_ylabel("Biên độ |S_ij| (dB)")
+    ax_mag.set_title(
+        "Biên độ |S_ij|\n"
+        "nét liền = pairwise, nét đứt đen = conn-matrix,\n"
+        "'o' = scikit-rf (lấy mẫu thưa)"
+    )
+    ax_mag.grid(alpha=0.3)
+    ax_mag.legend(fontsize=8, ncol=2)
+
+    ax_ph.set_xlabel(f"Tần số ({unit})")
+    ax_ph.set_ylabel("Pha S_ij (độ)")
+    ax_ph.set_title(
+        "Pha S_ij\n"
+        "nét liền = pairwise, nét đứt đen = conn-matrix,\n"
+        "'o' = scikit-rf (lấy mẫu thưa)"
+    )
+    ax_ph.grid(alpha=0.3)
+    ax_ph.legend(fontsize=8, ncol=2)
+
+    ax_err1.set_xlabel(f"Tần số ({unit})")
+    ax_err1.set_ylabel("|S_pairwise − S_conn-matrix|")
+    ax_err1.set_title("Sai số: pairwise vs connection-matrix")
+    ax_err1.axhline(TOL, color='r', ls=':', lw=1.2, label=f"ngưỡng {TOL:.0e}")
+    ax_err1.grid(alpha=0.3, which='both')
+    ax_err1.legend(fontsize=7, ncol=2)
+
+    ax_err2.set_xlabel(f"Tần số ({unit})")
+    ax_err2.set_ylabel("|S_conn-matrix − S_scikit-rf|")
+    ax_err2.set_title(
+        "Sai số: connection-matrix vs scikit-rf\n"
+        "(đối chiếu với tham chiếu độc lập)"
+    )
+    ax_err2.axhline(TOL, color='r', ls=':', lw=1.2, label=f"ngưỡng {TOL:.0e}")
+    ax_err2.grid(alpha=0.3, which='both')
+    ax_err2.legend(fontsize=7, ncol=2)
+
+    fig.suptitle(
+        f"{name}  —  quét {nf} điểm tần số "
+        f"({_fmt_freq(freqs[0])} – {_fmt_freq(freqs[-1])})",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+
+    out_path = os.path.join(outdir, f"sweep_{os.path.splitext(name)[0]}.png")
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+    print(f"  [DA VE] {out_path}")
+    return out_path
+
+
+# =====================================================================
 # 4. CHỨNG MINH LẠI: BẢN LỖI CŨ CHỈ SAI TRÊN MẠCH KHÔNG THUẬN NGHỊCH
 # =====================================================================
 
 def demo_bug_on_netlist(netfile='amplifier.net'):
     """
-    Thay connect_ports() dang da sua bang BAN LOI CU (dao 2 he so) va chay
-    lai cung netlist -> do xem sai lech sinh ra bao nhieu. Cho thay:
-      - mach thuan nghich (wilkinson, filter, branchline): sai lech = 0
-      - mach co transistor (amplifier): sai lech LON
+    Thay connect_ports() đang đã sửa bằng BẢN LỖI CŨ (đảo 2 hệ số) và chạy
+    lại cùng netlist -> đo xem sai lệch sinh ra bao nhiêu. Cho thấy:
+      - mạch thuận nghịch (wilkinson, filter, branchline): sai lệch = 0
+      - mạch có transistor (amplifier): sai lệch LỚN
     """
     import engine
     import solver
@@ -361,8 +545,8 @@ def demo_bug_on_netlist(netfile='amplifier.net'):
         for a, k in enumerate(outside):
             for b, m in enumerate(outside):
                 S_new[a, b] = S[k, m] + (
-                    S[k, p] * S[q, m] * (1 - S[q, p])      # DAO (bug cu)
-                    + S[k, q] * S[p, m] * (1 - S[p, q])    # DAO (bug cu)
+                    S[k, p] * S[q, m] * (1 - S[q, p])      # ĐẢO (bug cũ)
+                    + S[k, q] * S[p, m] * (1 - S[p, q])    # ĐẢO (bug cũ)
                     + S[k, p] * S[p, m] * S[q, q]
                     + S[k, q] * S[q, m] * S[p, p]
                 ) / D
@@ -404,8 +588,18 @@ if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     os.chdir(here)
 
-    cases = ['wilkinson.net', 'branchline.net', 'filter_lc.net',
-             'filter_stub.net', 'amplifier.net']
+    # Nếu gọi "python compare_algorithms.py <file1.net> [file2.net ...]" thì
+    # dùng DANH SÁCH NETLIST TUỲ Ý do người dùng truyền vào (không giới hạn
+    # 5 ví dụ có sẵn bên dưới). Mỗi file sẽ tự động được: kiểm chứng chéo 3
+    # cách + vẽ PNG sweep_<ten>.png qua plot_sweep() - không cần sửa code.
+    # check_theory() chỉ so sánh lý thuyết cho 5 tên netlist ví dụ (có sẵn),
+    # netlist mới sẽ được BỎ QUA bước này (không báo lỗi) nhưng VẪN được vẽ
+    # đồ thị và kiểm chứng chéo đầy đủ.
+    if len(sys.argv) > 1:
+        cases = sys.argv[1:]
+    else:
+        cases = ['wilkinson.net', 'branchline.net', 'filter_lc.net',
+                 'filter_stub.net', 'amplifier.net']
 
     print("=" * 78)
     print("KIEM CHUNG CHEO: pairwise (engine.py) vs connection-matrix vs scikit-rf")
@@ -418,7 +612,15 @@ if __name__ == "__main__":
         check_theory(r)
         results.append(r)
 
-    # ---------------- bang tong hop ----------------
+    # ---------------- quét toàn dải: vẽ đồ thị S(f) ----------------
+    print(f"\n{'=' * 78}")
+    print("QUET TOAN DAI TAN SO: VE DO THI S(f) (PNG) cho ca 3 cach")
+    print("=" * 78)
+    for c in cases:
+        r_full = run_case(c, max_points=None, verbose=False)
+        plot_sweep(r_full, outdir=here)
+
+    # ---------------- bảng tổng hợp ----------------
     print(f"\n{'=' * 78}")
     print("BANG TONG HOP")
     print("=" * 78)
@@ -433,7 +635,7 @@ if __name__ == "__main__":
               f"{r['d_ac']:11.3e} {r['d_bc']:11.3e}  "
               f"{'3 CACH KHOP' if ok else 'CO SAI KHAC'}")
 
-    # ---------------- bang chung bug cu ----------------
+    # ---------------- bằng chứng bug cũ ----------------
     print(f"\n{'=' * 78}")
     print("CHUNG MINH: ban LOI CU (dao he so) sai o dau")
     print("=" * 78)
@@ -443,18 +645,18 @@ if __name__ == "__main__":
                    else "bug LO RO (mach KHONG thuan nghich)")
         print(f"  {c:16s}  max|S_dasua - S_loicu| = {d:.3e}   -> {verdict}")
 
-    # ---------------- do thoi gian 1001 diem ----------------
+    # ---------------- đo thời gian 1001 điểm ----------------
     print(f"\n{'=' * 78}")
     print("THOI GIAN TINH VOI 1001 DIEM TAN SO (yeu cau de bai)")
     print("=" * 78)
     for c in cases:
         net = read_netlist(c)
         if net.freqs.size == 1:
-            # Chi co 1 diem tan so (vd wilkinson.net @ 2.4 GHz). Khong dung
-            # np.full() vi skrf.Frequency yeu cau tang dan NGHIEM NGAT, neu
-            # khong se phat InvalidFrequencyWarning (1001 gia tri giong nhau).
-            # Tang 1 Hz/diem (lech toi da 1 kHz tren 2.4 GHz) de giu monotonic
-            # tang dan ma khong lam sai lech ket qua do thoi gian.
+            # Chỉ có 1 điểm tần số (vd wilkinson.net @ 2.4 GHz). Không dùng
+            # np.full() vì skrf.Frequency yêu cầu tăng dần NGHIÊM NGẶT, nếu
+            # không sẽ phát InvalidFrequencyWarning (1001 giá trị giống nhau).
+            # Tăng 1 Hz/điểm (lệch tối đa 1 kHz trên 2.4 GHz) để giữ monotonic
+            # tăng dần mà không làm sai lệch kết quả đo thời gian.
             f1001 = net.freqs[0] + np.arange(1001, dtype=float)
         else:
             f1001 = np.linspace(net.freqs[0], net.freqs[-1], 1001)
