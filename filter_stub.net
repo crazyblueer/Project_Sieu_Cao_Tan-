@@ -1,17 +1,17 @@
 ! =====================================================================
-! filter_stub.net - LOC THONG DAI DUNG STUB LAMBDA/4 (PHAN BO)
+! filter_stub.net - LỌC THÔNG DẢI DÙNG STUB LAMBDA/4 (PHÂN BỐ)
 ! =====================================================================
-! Ba stub ngan mach lambda/4 (tai f0 = 2.4 GHz) cach nhau boi hai doan
-! day lambda/4 50 ohm. Stub ngan mach lambda/4 -> ho mach tai f0
-! (khong anh huong), nhung ngan mach tai 2*f0 va DC -> dac tuyen
-! THONG DAI quanh f0.
+! Ba stub ngắn mạch lambda/4 (tại f0 = 2.4 GHz) cách nhau bởi hai đoạn
+! dây lambda/4 50 ohm. Stub ngắn mạch lambda/4 -> hở mạch tại f0
+! (không ảnh hưởng), nhưng ngắn mạch tại 2*f0 và DC -> đặc tuyến
+! THÔNG DẢI quanh f0.
 !
 !   P1 --+-- TL1(50,90d) --+-- TL2(50,90d) --+-- P2
 !        |                 |                 |
 !      SB1(80,90d,short)  SB2(60,90d,short)  SB3(80,90d,short)
 !
-! Muc dich: kiem chung phan tu PHAN BO (TLINE + STUB TERM=short) tren
-! toan dai tan, va moi noi T tai 3 nut.
+! Mục đích: kiểm chứng phần tử PHÂN BỐ (TLINE + STUB TERM=short) trên
+! toàn dải tần, và mối nối T tại 3 nút.
 ! =====================================================================
 
 FREQ START=1.0G STOP=4.0G POINTS=301
