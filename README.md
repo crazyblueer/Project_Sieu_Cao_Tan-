@@ -57,7 +57,7 @@ Phase 9: THUẬT TOÁN THỨ HAI - connection matrix (connect_matrix/connect_nam
 Phase 10: PHÁT HIỆN & SỬA BUG - connect_ports() (bản GỐC) bị đảo 2 hệ số (1-S[p,q])
          <-> (1-S[q,p]) trong công thức nối dần từng cặp. Bug ẨN HOÀN TOÀN trên mạng
          THUẬN NGHỊCH (TLINE/RES/Wilkinson, S[p,q]=S[q,p]) nhưng LỘ RÕ trên mạng
-         KHÔNG thuận nghịch (transistor, S12 != S21) - xem transistor_bug_demo.py.
+         KHÔNG thuận nghịch (transistor, S12 != S21) (file demo cũ transistor_bug_demo.py đã được xóa).
          Đã sửa thành connect_ports_fixed() (bản CHÍNH THỨC, dùng qua connect_named()),
          GIỮ LẠI connect_ports() bản gốc trong engine.py để đối chiếu/minh họa lỗi.
 
@@ -86,24 +86,70 @@ Phase 12: QUÉT TOÀN DẢI TẦN & VẼ ĐỒ THỊ S(f) (compare_algorithms.py
          - Chạy được với netlist bất kỳ, không cần sửa code:
            python compare_algorithms.py <ten_file.net> [file2.net ...]
 
+Phase 13: TRỞ KHÁNG THAM CHIẾU Z0 PHỨC, KHÁC NHAU TỪNG CỔNG + HỢP NHẤT MÃ NGUỒN (đề tài 7*).
+         Tóm tắt thay đổi so với source code gốc (Phase 1-12):
+         - Mục tiêu: cổng ngoài (và mọi chân) có thể có Z0 THỰC hoặc PHỨC, KHÁC NHAU
+           từng cổng, theo sóng công suất (Kurokawa) - khớp scikit-rf s_def='power'.
+           Không khai Z0 -> 50 ohm, kết quả giống bản gốc.
+         - Cách dùng Z0:
+             + trong netlist:   PORT 2 OUT Z0=50+10j   (thực hoặc phức)
+             + lúc chạy:        net.set_port_z0({1: 75, 2: "50+10j"})   (không cần sửa .net)
+             + file .s2p:       ts.s_interp(f, z0=[50, 75])  (chuẩn hóa R trong header về Z0 bất kỳ)
+             + Monte-Carlo:     run_monte_carlo(..., port_z0={1: 75, 2: "50+10j"})
+           Ưu tiên: set_port_z0 > PORT ... Z0= trong .net > mặc định 50.
+         - Thay đổi theo file:
+             + engine.py (viết lại): thêm gamma_c (khối nối power-wave giữa 2 chân có Z0
+               khác nhau); connect_ports(S, p, q, Zp, Zq) là bản ĐÚNG; connect_matrix(S,
+               pairs, z0); một hàm connect(S, labels, name_pairs, z0_ports,
+               method="matrix"|"pairwise"). Gỡ: connect_ports bản lỗi (Phase 10),
+               connect_ports_fixed, connect_named, connect_named_matrix.
+             + solver.py (viết lại): solve_network(blocks, connections, ext, pin_z0,
+               ext_z0, z0, method="matrix") thay cho solve_network và
+               solve_network_global; thêm solve_netlist_at_freq(net, f, method=).
+               Mặc định đổi từ pairwise sang connection-matrix.
+             + netlist.py: cú pháp PORT n nút [Z0=...]; build_network(f, z0) trả
+               Network(blocks, connections, ext_labels, pin_z0, ext_z0) thay cho
+               build_network_at_freq; thêm set_port_z0().
+             + touchstone.py: s_interp(f, mode, z0=None); cảnh báo "R != 50" dời từ
+               load_s2p sang s_interp (chỉ khi không truyền z0, một lần mỗi file).
+             + monte_carlo.py: tham số port_z0, khóa kết quả z0_ports, 2 demo Z0 phức
+               (monte_carlo_filter_lc_z0c.png, monte_carlo_amplifier_z0c.png). Spec có thể
+               khai tương đối quanh danh định: spec={'S21': ('nom', 0.15)} = danh định ± 0.15 dB
+               (tính riêng từng tần số) Spec demo amplifier S21 đổi từ (10, 30) dB sang danh định ± 0.15 dB.
+             + compare_algorithms.py: dùng API mới; thêm bảng Z0 phức khác nhau từng
+               cổng so với scikit-rf; bỏ phần chứng minh bug cũ; thêm mục "SAI KHAC TREN
+               LUOI 1001 DIEM" (max của |A-B|, |A-C|, |B-C| trên 1001 điểm, cả Z0 = 50
+               lẫn Z0 phức).
+             + Toàn bộ comment/docstring trong code (và phần chú thích trong các file
+               .net, .s2p) được viết lại bằng tiếng Việt có dấu; chuỗi in ra (print) giữ
+               tiếng Việt không dấu. Logic code không đổi (đã so sánh AST).
+             + main.py: 2 dòng gọi API mới (kết quả in ra y hệt bản gốc).
+             + Không đổi logic: components.py, các file .net, fet.s2p, test.s2p (chỉ đổi
+               phần chú thích sang tiếng Việt có dấu) và các ảnh sweep_*.png.
+             + Không đổi: trial_error.py (file draft, giữ nguyên bản gốc).
+             + Đã xóa: transistor_bug_demo.py (bản lỗi đã gỡ khỏi engine.py).
+         - Tự kiểm thử: mỗi module có self_test() (python engine.py | solver.py |
+           netlist.py | touchstone.py | monte_carlo.py --test).
+         - Kiểm chứng so với bản gốc ở Z0 mặc định: connection-matrix giống hệt từng bit;
+           pairwise lệch <= 2e-15; Z0 phức khác nhau từng cổng khớp scikit-rf tới ~1e-14.
+         - Lưu ý tương thích: tên hàm cũ (connect_named*, solve_network_global,
+           build_network_at_freq) không còn; dùng
+               S = solve_network(*net.build_network(f))                    # matrix
+               S = solve_network(*net.build_network(f), method="pairwise")
+               S = solve_netlist_at_freq(net, f)                           # một dòng
+
 CẤU TRÚC FILE HIỆN TẠI (đã đơn giản hóa theo nhóm):
-  - engine.py        : nền tảng ghép cổng - connect_ports (gốc, có bug, GIỮ làm
-                        tài liệu), connect_ports_fixed/connect_named (bản
-                        CHÍNH THỨC đã sửa, pairwise), connect_matrix/
-                        connect_named_matrix (connection-matrix, giải 1 lần).
-  - components.py    : ma trận S các phần tử vi sóng cơ bản (R/L/C, TLINE, junction3,...).
-  - netlist.py        : đọc netlist văn bản, gọi components.py/touchstone.py, xuất
-                        (blocks, connections, ext_ports).
-  - touchstone.py     : đọc/ghi/nội suy file Touchstone .s2p.
-  - solver.py         : tích hợp netlist + engine - solve_network() (pairwise,
-                        dùng connect_named) và solve_network_global() (connection-
-                        matrix, dùng connect_named_matrix) - cả 2 cùng interface,
-                        dễ so sánh trực tiếp (xem compare_algorithms.py).
+  - engine.py        : nền tảng ghép cổng - gamma_c, connect_ports (1 cặp), connect_matrix
+                        (giải 1 lần), connect(..., method="matrix"|"pairwise").
+  - components.py    : ma trận S các phần tử vi sóng cơ bản (R/L/C, TLINE, junction3,...),
+                        renormalize / renormalize_general.
+  - netlist.py        : đọc netlist văn bản (kể cả PORT ... Z0=), gọi components.py/
+                        touchstone.py, xuất Network qua build_network(); set_port_z0().
+  - touchstone.py     : đọc/ghi/nội suy file Touchstone .s2p, chuẩn hóa về Z0 bất kỳ.
+  - solver.py         : tích hợp netlist + engine - solve_network(..., method=) và
+                        solve_netlist_at_freq(net, f, method=).
   - compare_algorithms.py : kiểm chứng chéo 3 cách (pairwise/connection-matrix/scikit-rf)
-                        trên mỗi netlist, và demo sai lệch của bản lỗi cũ.
-  - transistor_bug_demo.py : demo độc lập minh họa bug connect_ports() trên mạng
-                        KHÔNG thuận nghịch (transistor), gọi thẳng connect_ports/
-                        connect_ports_fixed/connect_matrix từ engine.py.
+                        trên mỗi netlist, cả Z0 mặc định lẫn Z0 phức.
   - main.py / trial_error.py : kiểm thử/draft ban đầu (z_to_s, renormalize, Touchstone).
   - monte_carlo.py    : mô phỏng Monte-Carlo dung sai linh kiện (phân bố GAUSS),
                         thống kê + vẽ histogram S11/S21 (dB), tính yield theo spec.
@@ -113,7 +159,8 @@ TRẠNG THÁI DỰ ÁN (HIỆN TẠI DỪNG Ở ĐÂY):
 - Quét cả dải tần (không chỉ 1 điểm f0) để vẽ đồ thị đáp ứng S theo f cho
   đủ cả 3 cách (pairwise/connection-matrix/scikit-rf) - ĐÃ XONG, xem
   compare_algorithms.py (hàm plot_sweep(), chạy qua run_case(max_points=None)).
-- Dự án DỪNG LẠI ở bước này (Phase 12 đã hoàn tất). Monte-Carlo dung sai
+- Phase 12 đã hoàn tất; Phase 13 (Z0 phức + hợp nhất mã nguồn) là bước cập nhật
+  mới nhất. Monte-Carlo dung sai
   linh kiện (Phase 11, monte_carlo.py) KHÔNG bị ảnh hưởng, vẫn thuộc tiến
   độ chính thức.
 
