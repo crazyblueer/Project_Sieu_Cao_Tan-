@@ -125,14 +125,15 @@
   <h3>Tiến độ theo Phase (trích README.md)</h3>
   <div class="card">
     <div class="progress-row"><span class="label">1-4: Z→S, TLINE, cascade</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
-    <div class="progress-row"><span class="label">5: connect_ports (pairwise)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">5: connect_ports (nối dần từng cặp)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
     <div class="progress-row"><span class="label">6: Ráp Wilkinson hoàn chỉnh</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
     <div class="progress-row"><span class="label">7: Biến đổi Z↔S, renormalize</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
     <div class="progress-row"><span class="label">8: Tích hợp netlist + engine</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
     <div class="progress-row"><span class="label">9: Connection-matrix (thuật toán 2)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
-    <div class="progress-row"><span class="label">10: Phát hiện &amp; sửa bug connect_ports</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">10: Phát hiện &amp; sửa bug connect_ports (bản lỗi đã gỡ khỏi code ở Phase 13)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
     <div class="progress-row"><span class="label">11: Monte-Carlo dung sai linh kiện</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
     <div class="progress-row"><span class="label">12: Quét toàn dải tần, vẽ đồ thị S(f) (biên độ + pha, 3 cách)</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
+    <div class="progress-row"><span class="label">13: Z0 phức khác nhau từng cổng (power wave, khớp scikit-rf) + hợp nhất mã nguồn</span><div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div><span class="badge ok">Done</span></div>
     <div class="progress-row"><span class="label">GUI vẽ sơ đồ mạch</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="badge warn">Chưa làm</span></div>
     <div class="progress-row"><span class="label">Tối ưu hóa</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="badge warn">Chưa làm</span></div>
     <div class="progress-row"><span class="label">Phân tích nhiễu</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="badge warn">Chưa làm</span></div>
@@ -155,7 +156,8 @@ S'[k,l] = S[k,l] + ( S[k,p]S[q,l](1-S[p,q])
                    + S[k,q]S[p,l](1-S[q,p])
                    + S[k,p]S[p,l]S[q,q]
                    + S[k,q]S[q,l]S[p,p] ) / D</pre>
-      <p class="caption">engine.py — connect_ports_fixed() / connect_named()</p>
+      <p class="caption">engine.py — connect_ports() / connect(..., method="pairwise"). Công thức trên cho Z0 thực chung;
+      với Z0 phức/khác nhau, mỗi cặp chân dùng hệ số Γc tổng quát (gamma_c) thay cho hoán đổi đơn giản.</p>
     </div>
     <div class="card">
       <h3>2. Ma trận kết nối (connection matrix)</h3>
@@ -163,7 +165,7 @@ S'[k,l] = S[k,l] + ( S[k,p]S[q,l](1-S[p,q])
       số cổng nội bộ (Redheffer star-product tổng quát).</p>
       <pre>Γ[p,q] = Γ[q,p] = 1  cho mỗi cặp nối (p,q)
 S_total = S_EE + S_EI · Γ · (I - S_II·Γ)⁻¹ · S_IE</pre>
-      <p class="caption">engine.py — connect_matrix() / connect_named_matrix()</p>
+      <p class="caption">engine.py — connect_matrix() / connect(..., method="matrix") — phương pháp mặc định</p>
     </div>
   </div>
   <div class="card">
@@ -183,14 +185,13 @@ S_total = S_EE + S_EI · Γ · (I - S_II·Γ)⁻¹ · S_IE</pre>
   <div class="card">
     <table>
       <tr><th>File</th><th>Vai trò</th></tr>
-      <tr><td><code>engine.py</code></td><td>Nền tảng ghép cổng — connect_ports (gốc, có bug lịch sử, GIỮ làm tài liệu), connect_ports_fixed/connect_named (bản chính thức), connect_matrix/connect_named_matrix (connection-matrix)</td></tr>
+      <tr><td><code>engine.py</code></td><td>Nền tảng ghép cổng — gamma_c, connect_ports (1 cặp), connect_matrix (giải 1 lần), connect(..., method="matrix"|"pairwise"); self_test()</td></tr>
       <tr><td><code>components.py</code></td><td>Ma trận S các phần tử vi sóng: R/L/C, TLINE, MLIN (microstrip), CLIN (coupled line), STUB, OPEN/SHORT, junction_n, renormalize (Z0 phức khác nhau mỗi cổng)</td></tr>
-      <tr><td><code>netlist.py</code></td><td>Đọc netlist văn bản (.net), gọi components.py/touchstone.py, xuất (blocks, connections, ext_ports)</td></tr>
-      <tr><td><code>touchstone.py</code></td><td>Đọc/ghi/nội suy file Touchstone .s2p</td></tr>
-      <tr><td><code>solver.py</code></td><td>solve_network() (pairwise) &amp; solve_network_global() (connection-matrix) — cùng interface để so sánh trực tiếp</td></tr>
+      <tr><td><code>netlist.py</code></td><td>Đọc netlist văn bản (.net, kể cả PORT … Z0=), build_network() → Network(blocks, connections, ext_labels, pin_z0, ext_z0), set_port_z0()</td></tr>
+      <tr><td><code>touchstone.py</code></td><td>Đọc/ghi/nội suy file Touchstone .s2p, chuẩn hóa về Z0 bất kỳ (s_interp(z0=…))</td></tr>
+      <tr><td><code>solver.py</code></td><td>solve_network(…, method="matrix"|"pairwise") và solve_netlist_at_freq(net, f, method=) — một hàm cho cả hai thuật toán</td></tr>
       <tr><td><code>compare_algorithms.py</code></td><td>Kiểm chứng chéo 3 cách: pairwise / connection-matrix / scikit-rf (tham chiếu độc lập)</td></tr>
-      <tr><td><code>transistor_bug_demo.py</code></td><td>Demo độc lập minh họa bug connect_ports() trên mạng KHÔNG thuận nghịch</td></tr>
-      <tr><td><code>monte_carlo.py</code></td><td>Mô phỏng Monte-Carlo dung sai linh kiện (phân bố Gauss), thống kê + histogram</td></tr>
+      <tr><td><code>monte_carlo.py</code></td><td>Mô phỏng Monte-Carlo dung sai linh kiện (phân bố Gauss), thống kê + histogram; hỗ trợ port_z0; <code>--test</code> để tự kiểm thử</td></tr>
       <tr><td><code>*.net</code></td><td>Netlist ví dụ: wilkinson, branchline, filter_lc, filter_stub, amplifier</td></tr>
     </table>
   </div>
@@ -263,16 +264,30 @@ S_total = S_EE + S_EI · Γ · (I - S_II·Γ)⁻¹ · S_IE</pre>
   <h2>Monte-Carlo dung sai linh kiện (phần mở rộng #1)</h2>
   <div class="card">
     <p>Ngẫu nhiên hóa giá trị R/L/C theo <b>phân bố Gauss</b> quanh giá trị danh định
-    (dung sai công bố ±X% ⇔ ±3σ), giải lại mạng bằng <code>solve_network_global()</code>
+    (dung sai công bố ±X% ⇔ ±3σ), giải lại mạng bằng <code>solve_netlist_at_freq()</code> (method="matrix")
     tại từng trial, thống kê |S11|/|S21| (dB): mean/std/percentile 5-50-95% + tỷ lệ đạt spec (yield).</p>
     <div class="grid2">
       <div>
         <img class="fig" src="monte_carlo_amplifier.png" alt="Monte Carlo amplifier">
-        <p class="caption">amplifier.net — nhiễu điện trở hồi tiếp RFB ±10%</p>
+        <p class="caption">amplifier.net — nhiễu điện trở hồi tiếp RFB ±10%, spec S21 = 5,72 dB ±0,15 dB (quanh danh định), yield 97,2%</p>
       </div>
       <div>
         <img class="fig" src="monte_carlo_filter_lc.png" alt="Monte Carlo filter LC">
-        <p class="caption">filter_lc.net — nhiễu C/L ±5%</p>
+        <p class="caption">filter_lc.net — nhiễu C/L ±5%, spec = danh định ±3 dB (S11), ±0,3 dB (S21) tại từng tần số</p>
+      </div>
+    </div>
+    <h3>Cổng ngoài có Z0 phức, khác nhau từng cổng</h3>
+    <p>Cùng nhiễu linh kiện như trên nhưng tham chiếu cổng đổi thành P1 = 75 Ω, P2 = 50+10j Ω
+    (truyền qua <code>run_monte_carlo(..., port_z0={1: 75, 2: "50+10j"})</code>, không sửa file .net).
+    Đây là sóng công suất (Kurokawa), khớp scikit-rf.</p>
+    <div class="grid2">
+      <div>
+        <img class="fig" src="monte_carlo_amplifier_z0c.png" alt="Monte Carlo amplifier, Z0 phức">
+        <p class="caption">amplifier.net — Z0 cổng = 75 / 50+10j Ω, nhiễu RFB ±10%</p>
+      </div>
+      <div>
+        <img class="fig" src="monte_carlo_filter_lc_z0c.png" alt="Monte Carlo filter LC, Z0 phức">
+        <p class="caption">filter_lc.net — Z0 cổng = 75 / 50+10j Ω, nhiễu C/L ±5%</p>
       </div>
     </div>
   </div>
