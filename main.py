@@ -1,7 +1,7 @@
 """
-main.py — Kiem thu engine mo phong mach (topic 7).
-Chay: python main.py
-Yeu cau co san trong cung thu muc: wilkinson.net, test.s2p
+main.py — Kiểm thử engine mô phỏng mạch (đề tài 7).
+Chạy: python main.py
+Yêu cầu có sẵn trong cùng thư mục: wilkinson.net, test.s2p
 """
 
 import numpy as np
@@ -18,18 +18,18 @@ from touchstone import load_s2p
 
 def test_renormalization():
     print("\n=== TEST 1: RENORMALIZATION (doi tro khang tham chieu) ===")
-    S_old = tline_ideal(np.pi / 2)   # doan lambda/4, he tham chieu = Zc cua no
+    S_old = tline_ideal(np.pi / 2)   # đoạn lambda/4, hệ tham chiếu = Zc của nó
 
-    # (a) Tuong thich nguoc: Z0 thuc -> ban tong quat phai trung ban cu
+    # (a) Tương thích ngược: Z0 thực -> bản tổng quát phải trùng bản cũ
     a = np.allclose(renormalize_general(S_old, 50 * np.sqrt(2), 50),
                     renormalize(S_old, 50 * np.sqrt(2), 50))
 
-    # (b) Sanity: doi ve chinh no khong doi gi; di roi ve -> nguyen ban
+    # (b) Kiểm tra cơ bản: đổi về chính nó thì không đổi; đi rồi về -> nguyên bản
     z = [50 + 10j, 50 + 10j]
     b1 = np.allclose(renormalize_general(S_old, z, z), S_old)
     b2 = np.allclose(renormalize_general(renormalize_general(S_old, 50, z), z, 50), S_old)
 
-    # (c) Cross-check scikit-rf (power wave) voi Z0 phuc
+    # (c) Đối chiếu scikit-rf (sóng công suất) với Z0 phức
     ntwk = rf.Network(frequency=rf.Frequency(2.4, 2.4, 1, 'ghz'),
                       s=S_old.reshape(1, 2, 2), z0=50 * np.sqrt(2))
     ntwk.renormalize([50 + 10j, 50 + 10j], s_def='power')
@@ -45,14 +45,15 @@ def test_renormalization():
 def test_netlist_wilkinson():
     print("\n=== TEST 2: NETLIST -> ENGINE (bo chia Wilkinson) ===")
     net = read_netlist("wilkinson.net")
-    blocks, connections, ext = net.build_network_at_freq(2.4e9, z0=50.0)
-    S = solve_network(blocks, connections, ext)
+    nw = net.build_network(2.4e9)          # Network(blocks, connections, ext_labels, pin_z0, ext_z0)
+    S = solve_network(*nw)                 # method="matrix" mặc định; method="pairwise" để nối dần từng cặp
+    ext = nw.ext_labels
 
     print("  Cong ngoai:", ext)
     print("  Ma tran S:")
     print(_indent(np.round(S, 4)))
 
-    # So voi ly thuyet Wilkinson: S21=S31=-0.707j, S11=S23=0
+    # So với lý thuyết Wilkinson: S21=S31=-0.707j, S11=S23=0
     expected = np.array([[0, -0.7071j, -0.7071j],
                          [-0.7071j, 0, 0],
                          [-0.7071j, 0, 0]])
