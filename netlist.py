@@ -4,11 +4,12 @@ Chức năng:
 1. Đọc netlist dạng text (.net, .txt).
 2. Gọi components.py / touchstone.py để lấy ma trận S của từng linh kiện.
 3. Tự động chèn mối nối lý tưởng N cổng cho mọi nút có từ 3 chân trở lên.
-4. Xuất (blocks, connections, external_ports) cho bộ giải của Người C.
+4. Xuất (blocks, connections, ext_labels, pin_z0, ext_z0) cho bộ giải (solver.py) qua build_network().
 
 NGỮ PHÁP (mỗi dòng một lệnh; '#', '!' hoặc ';' bắt đầu chú thích):
     FREQ START=1GHz STOP=3GHz POINTS=1001
-    PORT <số> <nút>
+    PORT <số> <nút> [Z0=<ohm>]                  ; Z0 tùy chọn, thực hoặc phức (vd 75, 50+10j);
+                                                ; bỏ qua = trở kháng tham chiếu mặc định (50)
     RES   <tên> <n1> <n2> R=<giá trị>          ; n2 = 0/GND -> mắc song song xuống đất
     CAP   <tên> <n1> <n2> C=<giá trị>
     IND   <tên> <n1> <n2> L=<giá trị>
@@ -19,6 +20,7 @@ NGỮ PHÁP (mỗi dòng một lệnh; '#', '!' hoặc ';' bắt đầu chú th�
     OPEN  <tên> <n>
     SHORT <tên> <n>
     S2P   <tên> <n1> <n2> FILE=<đường dẫn> [INTERP=ri|ma]
+                                                ; S của file (R != z0 dựng mạng) được chuẩn hóa lại
 
 QUY ƯỚC BÀN GIAO:
     blocks      : [(S_matrix, [nhãn chân, ...]), ...]     nhãn chân dạng '<tên>_p<k>'
@@ -26,9 +28,20 @@ QUY ƯỚC BÀN GIAO:
     ext_ports   : ['EXT_P1', 'EXT_P2', ...]                 xếp theo số cổng; mỗi nhãn EXT xuất
                                                             hiện đúng 1 lần trong connections,
                                                             chân đi cặp với nó là cổng ngoài
+
+    pin_z0      : {nhãn chân: Z0 (complex)}   - mọi chân của khối linh kiện/mối nối = z0 dựng mạng (50)
+    ext_z0      : [Z0 cổng 1, Z0 cổng 2, ...] - theo đúng thứ tự ext_ports; = Z0 khai báo ở lệnh PORT,
+                                                 nếu không có thì = z0 dựng mạng (mặc định 50)
+
+    build_network(f, z0=50) trả về Network(blocks, connections, ext_labels, pin_z0, ext_z0) (namedtuple):
+        S = solver.solve_network(*net.build_network(f))        # hoặc solver.solve_netlist_at_freq(net, f)
+    Z0 của PORT có thể đặt trong file (PORT 2 OUT Z0=50+10j) hoặc ghi đè lúc chạy bằng net.set_port_z0().
+
+    Tự kiểm thử: python netlist.py
 """
 
 import os
+from collections import namedtuple
 import numpy as np
 from components import (
     to_si, resistor_series, capacitor_series, inductor_series,
@@ -46,6 +59,9 @@ REQUIRED = {'RES': ['R'], 'CAP': ['C'], 'IND': ['L'], 'TLINE': ['Z0', 'EL', 'F0'
             'STUB': ['Z0', 'EL', 'F0'], 'S2P': ['FILE'], 'OPEN': [], 'SHORT': []}
 
 
+Network = namedtuple("Network", "blocks connections ext_labels pin_z0 ext_z0")
+
+
 class NetlistError(Exception):
     """Lỗi cú pháp hoặc lỗi topo trong netlist."""
 
@@ -54,6 +70,7 @@ class CircuitNetlist:
     def __init__(self):
         self.freqs = np.array([])     # Mảng tần số quét (Hz)
         self.external_ports = {}      # {port_num: node_name}
+        self.port_z0 = {}             # {port_num: Z0 khai báo ở lệnh PORT}; thiếu = dùng z0 mặc định
         self.elements = []            # Danh sách linh kiện
         self.base_dir = '.'           # Thư mục gốc để tìm file .s2p
         self._s2p_cache = {}          # {đường dẫn: Touchstone2P} - đọc file một lần
@@ -85,6 +102,20 @@ class CircuitNetlist:
         self._check()
         return self
 
+    @staticmethod
+    def _parse_impedance(text, what="Z0"):
+        """'75' -> 75.0 ; '50+10j' -> (50+10j) ; '1k' -> 1000.0. Phần thực phải > 0."""
+        try:
+            z = complex(text)
+        except ValueError:
+            try:
+                z = complex(to_si(text))
+            except Exception:
+                raise NetlistError(f"{what}: giá trị không hợp lệ '{text}' (ví dụ: 75 hoặc 50+10j)")
+        if not np.isfinite(z) or z.real <= 0:
+            raise NetlistError(f"{what}: phần thực phải > 0, nhận được '{text}'")
+        return z.real if z.imag == 0 else z
+
     def _parse_line(self, line):
         tokens = line.split()
         cmd = tokens[0].upper()
@@ -101,12 +132,22 @@ class CircuitNetlist:
             self.freqs = np.linspace(f_start, f_stop, points)
 
         elif cmd == "PORT":
+            if len(tokens) < 3:
+                raise NetlistError("PORT cần dạng: PORT <số> <nút> [Z0=<ohm>]")
             port_num, node = int(tokens[1]), tokens[2]
+            port_z0 = None
+            for tok in tokens[3:]:
+                key, _, val = tok.partition('=')
+                if key.upper() != 'Z0' or not val:
+                    raise NetlistError(f"PORT {port_num}: tham số không hỗ trợ '{tok}' (chỉ có Z0=<ohm>)")
+                port_z0 = self._parse_impedance(val, f"PORT {port_num} Z0")
             if port_num in self.external_ports:
                 raise NetlistError(f"cổng {port_num} khai báo hai lần")
             if node.upper() in GND_NAMES:
                 raise NetlistError("cổng ngoài không được đặt tại nút đất")
             self.external_ports[port_num] = node
+            if port_z0 is not None:
+                self.port_z0[port_num] = port_z0
 
         elif cmd in N_NODES:
             name = tokens[1]
@@ -186,18 +227,44 @@ class CircuitNetlist:
         if t == 'SHORT':
             return short_circuit(), nodes
         if t == 'S2P':
-            return elem['ts'].s_interp(f_val, mode=p.get('INTERP', 'ri').lower()), nodes
+            # z0: chuẩn hóa S của file (R của file) về z0 dựng mạng. R == z0 (vd 50 -> 50)
+            # thì không tính gì thêm -> kết quả giống hệt phiên bản cũ.
+            return elem['ts'].s_interp(f_val, mode=p.get('INTERP', 'ri').lower(), z0=z0), nodes
         raise NetlistError(f"loại linh kiện không hỗ trợ: {t}")
 
     # -----------------------------------------------------------------
     # 3. DỰNG MẠNG TẠI MỘT TẦN SỐ (TOPOLOGY RESOLVER)
     # -----------------------------------------------------------------
-    def build_network_at_freq(self, f_val, z0=50.0):
+    def set_port_z0(self, port_z0):
         """
-        Tại tần số f_val, trả về (blocks, connections, ext_port_labels) cho Người C.
+        Gán/ghi đè Z0 cổng ngoài (thay cho việc sửa lệnh PORT trong file .net); trả về self.
+            net.set_port_z0({1: 75, 2: '50+10j'})   hoặc   net.set_port_z0([75, '50+10j'])  (theo thứ tự cổng 1..N)
+        Giá trị: số thực/phức hoặc chuỗi ('75', '50+10j', '1k'); phần thực phải > 0.
+        Cổng được nhắc tới sẽ GHI ĐÈ giá trị khai trong netlist; cổng không nhắc tới giữ nguyên.
+        """
+        if port_z0 is None:
+            return self
+        if not isinstance(port_z0, dict):
+            port_z0 = {k + 1: v for k, v in enumerate(port_z0)}
+        new = dict(self.port_z0)
+        for k, v in port_z0.items():
+            k = int(k)
+            if k not in self.external_ports:
+                raise NetlistError(f"port_z0: netlist không có PORT {k} (có: {sorted(self.external_ports)})")
+            new[k] = self._parse_impedance(v, f"port_z0[{k}]")
+        self.port_z0 = new
+        return self
+
+    def build_network(self, f_val, z0=50.0):
+        """
+        Tại tần số f_val, trả về Network(blocks, connections, ext_labels, pin_z0, ext_z0).
         - Nút có 2 chân   -> nối trực tiếp.
         - Nút có >= 3 chân -> chèn mối nối lý tưởng N cổng (junction_n).
         - Nút có 1 chân   -> báo lỗi (dây treo).
+
+        pin_z0 : {nhãn chân (mọi chân của blocks): complex(z0)} - khối linh kiện/mối nối đều
+                 dựng ở cùng z0 (S2P đã được chuẩn hóa về z0).
+        ext_z0 : [Z0 cổng ngoài theo thứ tự ext_labels]; cổng không khai báo Z0 -> z0.
         """
         blocks, connections = [], []
         node_pins = {}
@@ -240,12 +307,14 @@ class CircuitNetlist:
                 for a, b in zip(pins, j_pins):
                     connections.append((a, b))
 
-        return blocks, connections, ext_port_labels
+        pin_z0 = {pin: complex(z0) for _, pins in blocks for pin in pins}
+        ext_z0 = [complex(self.port_z0.get(int(lbl[len('EXT_P'):]), z0)) for lbl in ext_port_labels]
+        return Network(blocks, connections, ext_port_labels, pin_z0, ext_z0)
 
     def sweep(self, z0=50.0):
-        """Tiện ích: lần lượt trả về (f, blocks, connections, ext_ports) cho mọi tần số."""
+        """Tiện ích: lần lượt trả về (f, Network) cho mọi tần số của FREQ."""
         for f_val in self.freqs:
-            yield (f_val,) + self.build_network_at_freq(f_val, z0)
+            yield f_val, self.build_network(f_val, z0)
 
 
 def read_netlist(filename):
@@ -256,7 +325,7 @@ def read_netlist(filename):
 # =====================================================================
 # BỘ TEST TỰ ĐỘNG
 # =====================================================================
-if __name__ == "__main__":
+def self_test():
     print("=" * 60)
     print("KIỂM THỬ MODULE NETLIST.PY (NGƯỜI B)")
     print("=" * 60)
@@ -273,7 +342,7 @@ if __name__ == "__main__":
     RES   R1 OUT1 OUT2 R=100
     """
     net = CircuitNetlist().parse_text(wilkinson)
-    blocks, conns, ext = net.build_network_at_freq(2.4e9)
+    blocks, conns, ext = net.build_network(2.4e9)[:3]
     juncs = [pins for S, pins in blocks if pins[0].startswith('J_')]
     assert len(net.freqs) == 1001 and len(blocks) == 6 and len(juncs) == 3 and len(conns) == 9
     assert ext == ['EXT_P1', 'EXT_P2', 'EXT_P3']
@@ -291,7 +360,7 @@ if __name__ == "__main__":
     CAP C5 c GND C=1.967p
     """
     net = CircuitNetlist().parse_text(lpf)
-    blocks, conns, ext = net.build_network_at_freq(1e9)
+    blocks, conns, ext = net.build_network(1e9)[:3]
     one_port = [pins for S, pins in blocks if S.shape == (1, 1)]
     assert len(one_port) == 3, "Tụ nối đất phải thành khối 1 cổng"
     print(f"[PASS] 2. LPF LC: 3 tụ nối đất -> 3 khối 1 cổng, {len(blocks)} khối, {len(conns)} cặp nối")
@@ -307,7 +376,7 @@ if __name__ == "__main__":
     STUB S1 n1 Z0=50 EL=45 F0=2GHz TERM=open
     STUB S2 n1 Z0=50 EL=30 F0=2GHz TERM=short
     """)
-    blocks, conns, ext = net.build_network_at_freq(2e9)
+    blocks, conns, ext = net.build_network(2e9)[:3]
     sizes = sorted(S.shape[0] for S, pins in blocks if pins[0].startswith('J_'))
     assert sizes == [4], "Nút n1 có 4 chân phải sinh mối nối 4 cổng"
     print("[PASS] 3. Đường ghép 4 cổng + 2 stub tại n1 -> mối nối 4 cổng")
@@ -322,10 +391,73 @@ if __name__ == "__main__":
     }
     for what, txt in bad.items():
         try:
-            CircuitNetlist().parse_text(txt).build_network_at_freq(1.5e9)
+            CircuitNetlist().parse_text(txt).build_network(1.5e9)
             raise AssertionError(f"Không phát hiện lỗi: {what}")
         except NetlistError:
             pass
     print(f"[PASS] 4. Phát hiện đúng {len(bad)} loại lỗi netlist")
 
-    print("\n=> TẤT CẢ KIỂM THỬ ĐẠT.")
+
+    # ---------------- Z0 cổng ngoài (PORT ... Z0=..., set_port_z0, build_network) ----------------
+    results = []
+
+    def check(name, ok, extra=""):
+        results.append(bool(ok))
+        print(f"[{'PASS' if ok else 'FAIL'}] {name} {extra}")
+
+    def make_net(p1="PORT 1 a", p2="PORT 2 b"):
+        return CircuitNetlist().parse_text(f"FREQ START=1G STOP=2G POINTS=3\n{p1}\n{p2}\nRES R1 a b R=100\n")
+
+    n = make_net()
+    check("PORT không Z0: port_z0 rỗng", n.port_z0 == {})
+    n = make_net("PORT 1 a Z0=75", "PORT 2 b z0=50+10j")
+    check("PORT Z0 thực/phức (không phân biệt hoa thường)",
+          n.port_z0 == {1: 75.0, 2: 50 + 10j} and isinstance(n.port_z0[1], float))
+    check("PORT Z0=1k", make_net("PORT 1 a Z0=1k").port_z0 == {1: 1000.0})
+    bad_ports = {"Z0 âm": "PORT 1 a Z0=-50", "Z0 = 0": "PORT 1 a Z0=0", "Z0 rác": "PORT 1 a Z0=abc",
+                 "tham số lạ": "PORT 1 a FOO=1", "Z0 rỗng": "PORT 1 a Z0=", "thiếu nút": "PORT 1"}
+    ok = True
+    for k, line in bad_ports.items():
+        try:
+            make_net(line)
+            ok = False
+            print("   không báo lỗi:", k)
+        except NetlistError:
+            pass
+    check("PORT lỗi cú pháp -> NetlistError", ok)
+
+    nw = CircuitNetlist().parse_text(wilkinson).build_network(2.4e9)
+    blocks, conns, ext, pin_z0, ext_z0 = nw
+    allpins = [p for _, pins in blocks for p in pins]
+    check("build_network trả Network 5 phần tử (giải nén được)", len(nw) == 5 and nw.blocks is blocks)
+    check("pin_z0 phủ mọi chân, đều = 50", set(pin_z0) == set(allpins) and all(v == 50 for v in pin_z0.values()))
+    check("ext_z0 mặc định = [50]*3", ext_z0 == [50 + 0j] * 3)
+    _, _, e, _, ez = make_net("PORT 1 a Z0=75", "PORT 2 b Z0=50+10j").build_network(1e9)
+    check("ext_z0 theo PORT khai báo", e == ['EXT_P1', 'EXT_P2'] and ez == [75 + 0j, 50 + 10j])
+    _, _, _, pz, ez = make_net("PORT 1 a Z0=75").build_network(1e9, z0=60.0)
+    check("tham số z0 của build_network là Z0 mặc định của chân và của cổng không khai báo",
+          all(v == 60 for v in pz.values()) and ez == [75 + 0j, 60 + 0j])
+
+    n = make_net("PORT 1 a Z0=75", "PORT 2 b Z0=50+10j")
+    n.set_port_z0({2: 100})
+    check("set_port_z0 ghi đè đúng cổng được nhắc, giữ cổng còn lại", n.port_z0 == {1: 75.0, 2: 100.0})
+    n.set_port_z0([60, "30-5j"])
+    check("set_port_z0 dạng list theo thứ tự cổng", n.port_z0 == {1: 60.0, 2: 30 - 5j})
+    check("set_port_z0(None) không đổi gì và trả về chính net", n.set_port_z0(None) is n and n.port_z0 == {1: 60.0, 2: 30 - 5j})
+    ok = True
+    for badz in ({3: 50}, {1: -5}, {1: 0}, {1: "abc"}, {1: "-5+3j"}):
+        try:
+            make_net().set_port_z0(badz)
+            ok = False
+        except NetlistError:
+            pass
+    check("set_port_z0 sai (cổng không tồn tại / Re<=0 / chuỗi rác) -> NetlistError", ok)
+    f_first, nw0 = next(make_net().sweep())
+    check("sweep() trả (f, Network)", f_first == 1e9 and len(nw0) == 5)
+
+    print(f"\n=> {sum(results)}/{len(results)} PASS (kiểm thử Z0) + 4 nhóm kiểm thử topo/lỗi ở trên: ĐẠT.")
+    return all(results)
+
+
+if __name__ == "__main__":
+    raise SystemExit(0 if self_test() else 1)
