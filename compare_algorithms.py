@@ -2,8 +2,8 @@
 compare_algorithms.py - KIỂM CHỨNG CHÉO 3 CÁCH TÍNH MA TRẬN S
 
 So sánh trên MỌI file netlist có trong thư mục:
-  (A) pairwise      : solve_network()        - nối dần từng cặp cổng (engine.py)
-  (B) conn-matrix   : solve_network_global() - ma trận kết nối (solver.py, dùng connect_named_matrix của engine.py)
+  (A) pairwise      : solve_netlist_at_freq(..., method="pairwise") - nối dần từng cặp cổng (engine.py)
+  (B) conn-matrix   : solve_netlist_at_freq(..., method="matrix")   - ma trận kết nối (engine.py, mặc định)
   (C) scikit-rf     : rf.Circuit             - tham chiếu độc lập
 
 Cách (C) dùng ngay netlist đã parse: mỗi linh kiện được dựng lại bằng
@@ -11,6 +11,10 @@ primitive của scikit-rf (DefinedGammaZ0.line / delay_open / delay_short /
 capacitor / inductor / Network từ file .s2p), rồi nối theo ĐÚNG topo nút
 của netlist bằng rf.Circuit. Vì vậy (C) không dùng bất kỳ mã nào của
 engine.py / solver.py -> là tham chiếu thật sự độc lập.
+
+Kết quả in ra console gồm: bảng sai khác 41 điểm (Z0 = 50 và Z0 phức khác nhau từng
+cổng), thời gian chạy trên lưới 1001 điểm, và bảng SAI KHÁC LỚN NHẤT trên lưới 1001
+điểm (max của |A-B|, |A-C|, |B-C|) cho cả hai trường hợp Z0.
 
 Chạy (5 netlist ví dụ có sẵn): python compare_algorithms.py
 Chạy với netlist TUỲ Ý (bất kỳ file .net nào, không cần sửa code):
@@ -33,7 +37,7 @@ from skrf.media import DefinedGammaZ0
 
 from components import is_lossless, is_passive, is_reciprocal, to_si
 from netlist import GND_NAMES, read_netlist
-from solver import solve_network, solve_network_global
+from solver import solve_netlist_at_freq
 
 
 def _resolve_circuit():
@@ -150,7 +154,7 @@ def build_skrf_circuit(net, freqs):
 
         if t == 'S2P':
             ts = elem['ts']
-            s = np.array([ts.s_interp(fv, mode=p.get('INTERP', 'ri').lower()) for fv in f])
+            s = np.array([ts.s_interp(fv, mode=p.get('INTERP', 'ri').lower(), z0=Z0) for fv in f])
             ntwk = rf.Network(frequency=frequency, s=s, z0=Z0, name=name)
             add(nodes[0], ntwk, 0)
             add(nodes[1], ntwk, 1)
@@ -171,7 +175,7 @@ def build_skrf_circuit(net, freqs):
     # Cổng ngoài -> rf.Circuit.Port, đặt theo thứ tự P1, P2, ...
     port_of_ntwk = {}
     for port_num, node in sorted(net.external_ports.items()):
-        port = Circuit.Port(frequency, name=f'port{port_num}', z0=Z0)
+        port = Circuit.Port(frequency, name=f'port{port_num}', z0=net.port_z0.get(port_num, Z0))
         port_of_ntwk[id(port)] = port_num
         add(node, port, 0)
 
@@ -196,7 +200,7 @@ def build_skrf_circuit(net, freqs):
 # 2. CHẠY MỘT NETLIST QUA CẢ 3 CÁCH
 # =====================================================================
 
-def run_case(netfile, max_points=None, verbose=True):
+def run_case(netfile, max_points=None, verbose=True, port_z0=None):
     """
     Trả về dict kết quả: ma trận S của 3 cách + sai khác + thời gian.
     max_points: giới hạn số điểm tần số (để chạy nhanh); None = dùng hết.
@@ -205,28 +209,31 @@ def run_case(netfile, max_points=None, verbose=True):
     5 ví dụ có sẵn trong thư mục), chỉ cần đúng cú pháp netlist.py (FREQ,
     PORT, các phần tử RES/CAP/IND/TLINE/MLIN/CLIN/STUB/OPEN/SHORT/S2P). Đây
     là hàm được gọi lại bởi plot_sweep() bên dưới để tự động vẽ PNG.
+
+    port_z0: Z0 cổng ngoài (thực/phức, khác nhau từng cổng) ghi đè lên netlist,
+    vd {1: 75, 2: '50+10j'}; cổng netlist không có sẽ bị bỏ qua. None = như khai trong .net.
     """
     net = read_netlist(netfile)
+    if port_z0:
+        net.set_port_z0({k: v for k, v in port_z0.items() if k in net.external_ports})
     freqs = net.freqs
     if max_points is not None and freqs.size > max_points:
         idx = np.linspace(0, freqs.size - 1, max_points).astype(int)
         freqs = freqs[idx]
     nf = freqs.size
 
-    # --- (A) pairwise & (B) connection-matrix ---
+    # --- (A) nối từng cặp (pairwise) & (B) ma trận kết nối (connection-matrix) ---
     t0 = time.perf_counter()
     S_pair = []
     for fv in freqs:
-        blocks, conns, ext = net.build_network_at_freq(fv, z0=Z0)
-        S_pair.append(solve_network(blocks, conns, ext))
+        S_pair.append(solve_netlist_at_freq(net, fv, Z0, method="pairwise"))
     t_pair = time.perf_counter() - t0
     S_pair = np.array(S_pair)
 
     t0 = time.perf_counter()
     S_glob = []
     for fv in freqs:
-        blocks, conns, ext = net.build_network_at_freq(fv, z0=Z0)
-        S_glob.append(solve_network_global(blocks, conns, ext))
+        S_glob.append(solve_netlist_at_freq(net, fv, Z0, method="matrix"))
     t_glob = time.perf_counter() - t0
     S_glob = np.array(S_glob)
 
@@ -523,65 +530,70 @@ def plot_sweep(res, outdir='.'):
 
 
 # =====================================================================
-# 4. CHỨNG MINH LẠI: BẢN LỖI CŨ CHỈ SAI TRÊN MẠCH KHÔNG THUẬN NGHỊCH
+# 3c. LƯỚI 1001 ĐIỂM TẦN SỐ: THỜI GIAN VÀ SAI KHÁC GIỮA 3 CÁCH
 # =====================================================================
 
-def demo_bug_on_netlist(netfile='amplifier.net'):
+def grid_1001(net):
+    """Lưới 1001 điểm tần số dùng cho phép đo thời gian và sai khác."""
+    if net.freqs.size == 1:
+        # Chỉ có 1 điểm tần số (vd wilkinson.net @ 2.4 GHz). Không dùng
+        # np.full() vì skrf.Frequency yêu cầu tăng dần NGHIÊM NGẶT, nếu
+        # không sẽ phát InvalidFrequencyWarning (1001 giá trị giống nhau).
+        # Tăng 1 Hz/điểm (lệch tối đa 1 kHz trên 2.4 GHz) để giữ monotonic
+        # tăng dần mà không làm sai lệch kết quả đo.
+        return net.freqs[0] + np.arange(1001, dtype=float)
+    return np.linspace(net.freqs[0], net.freqs[-1], 1001)
+
+
+def run_1001(netfile, port_z0=None):
     """
-    Thay connect_ports() đang đã sửa bằng BẢN LỖI CŨ (đảo 2 hệ số) và chạy
-    lại cùng netlist -> đo xem sai lệch sinh ra bao nhiêu. Cho thấy:
-      - mạch thuận nghịch (wilkinson, filter, branchline): sai lệch = 0
-      - mạch có transistor (amplifier): sai lệch LỚN
+    Chạy cả 3 cách trên lưới 1001 điểm; trả về dict gồm thời gian và sai khác lớn nhất:
+    d_ab = max|A-B|, d_ac = max|A-C|, d_bc = max|B-C|, d_max = lớn nhất của ba giá trị đó.
+    port_z0: như run_case() (Z0 cổng ngoài thực/phức ghi đè lên netlist; None = như trong .net).
     """
-    import engine
-    import solver
-
-    def connect_ports_buggy(S, p, q):
-        S = np.asarray(S, dtype=complex)
-        N = S.shape[0]
-        outside = [k for k in range(N) if k != p and k != q]
-        D = (1 - S[p, q]) * (1 - S[q, p]) - S[p, p] * S[q, q]
-        S_new = np.zeros((len(outside), len(outside)), dtype=complex)
-        for a, k in enumerate(outside):
-            for b, m in enumerate(outside):
-                S_new[a, b] = S[k, m] + (
-                    S[k, p] * S[q, m] * (1 - S[q, p])      # ĐẢO (bug cũ)
-                    + S[k, q] * S[p, m] * (1 - S[p, q])    # ĐẢO (bug cũ)
-                    + S[k, p] * S[p, m] * S[q, q]
-                    + S[k, q] * S[q, m] * S[p, p]
-                ) / D
-        return S_new
-
-    def connect_named_buggy(S, labels, name_p, name_q):
-        p, q = labels.index(name_p), labels.index(name_q)
-        S_new = connect_ports_buggy(S, p, q)
-        return S_new, [labels[k] for k in range(len(labels)) if k != p and k != q]
-
     net = read_netlist(netfile)
-    freqs = net.freqs[::max(1, net.freqs.size // 21)]
+    if port_z0:
+        net.set_port_z0({k: v for k, v in port_z0.items() if k in net.external_ports})
+    f1001 = grid_1001(net)
 
-    S_fixed, S_buggy = [], []
-    for fv in freqs:
-        blocks, conns, ext = net.build_network_at_freq(fv, z0=Z0)
-        S_fixed.append(solve_network(blocks, conns, ext))
+    # (A) nối từng cặp
+    t0 = time.perf_counter()
+    S_pair = np.array([solve_netlist_at_freq(net, fv, Z0, method="pairwise") for fv in f1001])
+    t_pair = time.perf_counter() - t0
 
-    orig = solver.connect_named
-    solver.connect_named = connect_named_buggy
-    try:
-        for fv in freqs:
-            blocks, conns, ext = net.build_network_at_freq(fv, z0=Z0)
-            S_buggy.append(solver.solve_network(blocks, conns, ext))
-    finally:
-        solver.connect_named = orig
-    _ = engine
+    # (B) ma trận kết nối
+    t0 = time.perf_counter()
+    S_glob = np.array([solve_netlist_at_freq(net, fv, Z0, method="matrix") for fv in f1001])
+    t_glob = time.perf_counter() - t0
 
-    S_fixed, S_buggy = np.array(S_fixed), np.array(S_buggy)
-    d = np.abs(S_fixed - S_buggy).max()
-    return d
+    # (C) scikit-rf (thời gian gồm dựng mạch + giải; hoán vị cổng làm sau khi đã đo xong)
+    t0 = time.perf_counter()
+    circuit, perm = build_skrf_circuit(net, f1001)
+    S_raw = circuit.network.s
+    t_skrf = time.perf_counter() - t0
+    S_skrf = S_raw[:, perm, :][:, :, perm]
+
+    d_ab = np.abs(S_pair - S_glob).max()
+    d_ac = np.abs(S_pair - S_skrf).max()
+    d_bc = np.abs(S_glob - S_skrf).max()
+    return dict(name=os.path.basename(netfile), n_ports=S_pair.shape[1],
+                d_ab=d_ab, d_ac=d_ac, d_bc=d_bc, d_max=max(d_ab, d_ac, d_bc),
+                t_pair=t_pair, t_glob=t_glob, t_skrf=t_skrf)
+
+
+def print_sai_khac_1001(rows):
+    """In bảng sai khác trên lưới 1001 điểm; cột 'lon nhat' = lớn nhất của |A-B|, |A-C|, |B-C|."""
+    print(f"{'netlist':16s} {'cong':>4s} {'|A-B|':>11s} {'|A-C|':>11s} {'|B-C|':>11s} "
+          f"{'lon nhat':>11s}  ket luan")
+    print('-' * 78)
+    for r in rows:
+        print(f"{r['name']:16s} {r['n_ports']:4d} {r['d_ab']:11.3e} {r['d_ac']:11.3e} "
+              f"{r['d_bc']:11.3e} {r['d_max']:11.3e}  "
+              f"{'KHOP' if r['d_max'] < TOL else 'LECH'}")
 
 
 # =====================================================================
-# 5. MAIN
+# 4. CHƯƠNG TRÌNH CHÍNH
 # =====================================================================
 
 if __name__ == "__main__":
@@ -635,52 +647,43 @@ if __name__ == "__main__":
               f"{r['d_ac']:11.3e} {r['d_bc']:11.3e}  "
               f"{'3 CACH KHOP' if ok else 'CO SAI KHAC'}")
 
-    # ---------------- bằng chứng bug cũ ----------------
+    # ---------------- Z0 cổng ngoài PHỨC / KHÁC NHAU (không sửa file .net) ----------------
     print(f"\n{'=' * 78}")
-    print("CHUNG MINH: ban LOI CU (dao he so) sai o dau")
+    print("Z0 CONG NGOAI PHUC / KHAC NHAU (P1=75, P2=50+10j, P3=30-5j, P4=100+40j) - 3 cach")
     print("=" * 78)
+    ZC = {1: 75, 2: "50+10j", 3: "30-5j", 4: "100+40j"}
+    print(f"{'netlist':16s} {'cong':>4s} {'|A-B|':>11s} {'|A-C|':>11s} {'|B-C|':>11s}  ket luan")
+    print('-' * 78)
     for c in cases:
-        d = demo_bug_on_netlist(c)
-        verdict = ("bug AN (mach thuan nghich)" if d < 1e-12
-                   else "bug LO RO (mach KHONG thuan nghich)")
-        print(f"  {c:16s}  max|S_dasua - S_loicu| = {d:.3e}   -> {verdict}")
+        r = run_case(c, max_points=41, verbose=False, port_z0=ZC)
+        ok = max(r['d_ab'], r['d_ac'], r['d_bc']) < TOL
+        all_ok &= ok
+        print(f"{r['name']:16s} {r['n_ports']:4d} {r['d_ab']:11.3e} "
+              f"{r['d_ac']:11.3e} {r['d_bc']:11.3e}  "
+              f"{'3 CACH KHOP' if ok else 'CO SAI KHAC'}")
 
-    # ---------------- đo thời gian 1001 điểm ----------------
+    # ---------------- lưới 1001 điểm: đo thời gian ----------------
     print(f"\n{'=' * 78}")
     print("THOI GIAN TINH VOI 1001 DIEM TAN SO (yeu cau de bai)")
     print("=" * 78)
+    rows_1001 = []
     for c in cases:
-        net = read_netlist(c)
-        if net.freqs.size == 1:
-            # Chỉ có 1 điểm tần số (vd wilkinson.net @ 2.4 GHz). Không dùng
-            # np.full() vì skrf.Frequency yêu cầu tăng dần NGHIÊM NGẶT, nếu
-            # không sẽ phát InvalidFrequencyWarning (1001 giá trị giống nhau).
-            # Tăng 1 Hz/điểm (lệch tối đa 1 kHz trên 2.4 GHz) để giữ monotonic
-            # tăng dần mà không làm sai lệch kết quả đo thời gian.
-            f1001 = net.freqs[0] + np.arange(1001, dtype=float)
-        else:
-            f1001 = np.linspace(net.freqs[0], net.freqs[-1], 1001)
+        r = run_1001(c)
+        rows_1001.append(r)
+        print(f"  {c:16s} pairwise {r['t_pair']:6.3f}s | conn-matrix {r['t_glob']:6.3f}s "
+              f"| scikit-rf {r['t_skrf']:6.3f}s   ({r['t_pair'] / 1001 * 1e3:.2f} / "
+              f"{r['t_glob'] / 1001 * 1e3:.2f} / {r['t_skrf'] / 1001 * 1e3:.2f} ms moi diem)")
 
-        t0 = time.perf_counter()
-        for fv in f1001:
-            blocks, conns, ext = net.build_network_at_freq(fv, z0=Z0)
-            solve_network(blocks, conns, ext)
-        t_a = time.perf_counter() - t0
-
-        t0 = time.perf_counter()
-        for fv in f1001:
-            blocks, conns, ext = net.build_network_at_freq(fv, z0=Z0)
-            solve_network_global(blocks, conns, ext)
-        t_b = time.perf_counter() - t0
-
-        t0 = time.perf_counter()
-        circ, _ = build_skrf_circuit(net, f1001)
-        _ = circ.network.s
-        t_c = time.perf_counter() - t0
-
-        print(f"  {c:16s} pairwise {t_a:6.3f}s | conn-matrix {t_b:6.3f}s "
-              f"| scikit-rf {t_c:6.3f}s   ({t_a / 1001 * 1e3:.2f} / "
-              f"{t_b / 1001 * 1e3:.2f} / {t_c / 1001 * 1e3:.2f} ms moi diem)")
+    # ---------------- lưới 1001 điểm: sai khác lớn nhất của 3 cách ----------------
+    print(f"\n{'=' * 78}")
+    print("SAI KHAC TREN LUOI 1001 DIEM (lon nhat cua |A-B|, |A-C|, |B-C|)")
+    print("=" * 78)
+    print("Z0 cong ngoai = 50 ohm (mac dinh):")
+    print_sai_khac_1001(rows_1001)
+    print("\nZ0 cong ngoai PHUC / KHAC NHAU (P1=75, P2=50+10j, P3=30-5j, P4=100+40j):")
+    rows_1001_zc = [run_1001(c, port_z0=ZC) for c in cases]
+    print_sai_khac_1001(rows_1001_zc)
+    all_ok &= all(r['d_max'] < TOL for r in rows_1001 + rows_1001_zc)
 
     print(f"\n{'=' * 78}")
     print("KET LUAN: " + ("TAT CA netlist khop ca 3 cach duoi nguong 1e-6."
