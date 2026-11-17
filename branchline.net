@@ -1,9 +1,9 @@
 ! =====================================================================
-! branchline.net - BO GHEP BRANCH-LINE (QUADRATURE HYBRID) 3 dB, 4 CONG
+! branchline.net - BỘ GHÉP BRANCH-LINE (QUADRATURE HYBRID) 3 dB, 4 CỔNG
 ! =====================================================================
-! Bon doan day lambda/4 tai f0 = 2.4 GHz tao thanh vong kin:
-!   - hai nhanh NGANG (series arms) : Z0/sqrt(2) = 35.355 ohm
-!   - hai nhanh DOC   (shunt arms)  : Z0        = 50 ohm
+! Bốn đoạn dây lambda/4 tại f0 = 2.4 GHz tạo thành vòng kín:
+!   - hai nhánh NGANG (series arms) : Z0/sqrt(2) = 35.355 ohm
+!   - hai nhánh DỌC   (shunt arms)  : Z0        = 50 ohm
 !
 !        P1 ---- TL_A (35.355) ---- P2
 !        |                           |
@@ -11,13 +11,13 @@
 !        |                           |
 !        P4 ---- TL_C (35.355) ---- P3
 !
-! Ly thuyet tai f0 (Pozar - quadrature hybrid):
+! Lý thuyết tại f0 (Pozar - quadrature hybrid):
 !   S = -1/sqrt(2) * [[0, j, 1, 0], [j, 0, 0, 1], [1, 0, 0, j], [0, 1, j, 0]]
-!   -> cong 2 = THANG   (|S21| = 0.7071, pha  -90 do)
-!      cong 3 = GHEP    (|S31| = 0.7071, pha -180 do) -> vuong pha voi cong 2
-!      cong 4 = CACH LY (S41 = 0);  S11 = 0 (phoi hop hoan toan)
-! Moi nut co 3 chan (1 cong ngoai + 2 doan day) -> 4 moi noi T tu dong.
-! Mang 4 cong -> kiem chung thuat toan voi so cong > 3.
+!   -> cổng 2 = THẲNG   (|S21| = 0.7071, pha  -90 độ)
+!      cổng 3 = GHÉP    (|S31| = 0.7071, pha -180 độ) -> vuông pha với cổng 2
+!      cổng 4 = CÁCH LY (S41 = 0);  S11 = 0 (phối hợp hoàn toàn)
+! Mỗi nút có 3 chân (1 cổng ngoài + 2 đoạn dây) -> 4 mối nối T tự động.
+! Mạng 4 cổng -> kiểm chứng thuật toán với số cổng > 3.
 ! =====================================================================
 
 FREQ START=1.4G STOP=3.4G POINTS=201
