@@ -1,0 +1,14 @@
+! Matched 3 dB T attenuator, 50 ohm reference, 290 K
+! P1 -- R1 -- node_mid -- R2 -- P2
+!                    |
+!                   Rsh
+!                    |
+!                   GND
+! Rseries = Z0*(K-1)/(K+1); Rsh = 2*Z0*K/(K^2-1)
+! K=10^(3/20) = 1.41253754462 (voltage attenuation)
+FREQ START=100M STOP=3G POINTS=101
+PORT 1 IN
+PORT 2 OUT
+RES R1 IN MID R=8.549867867180952
+RES RSH MID 0 R=141.92615588654354
+RES R2 MID OUT R=8.549867867180952
