@@ -1,7 +1,9 @@
-"""Topic 7: interactive netlist schematic editor backed by the team's solver.
-Usage: /usr/local/bin/python3 circuit_gui.py
-Requires tkinter (Python build with Tk support), numpy, matplotlib, and team's netlist.py/solver.py.
-This is a node-based schematic: wires reflect *netlist node identity*, not pin-crossing geometry.
+"""Topic 7 S-matrix Circuit Editor v3.
+Run: /usr/local/bin/python3 circuit_gui_v3.py
+Requires Tkinter, NumPy, Matplotlib, and the team's netlist.py/solver.py/
+components.py/touchstone.py in the project folder.
+Node-based circuit: electrical connectivity is defined by NETLIST NODE IDENTITY,
+never by wire-crossing geometry. The existing team solver is not modified.
 """
 from __future__ import annotations
 import copy
@@ -630,7 +632,581 @@ class SchematicAppV2(SchematicApp):
         if self.selected and self.active_pin is None:
             self.status.set(f'Selected: {self.selected[1]} | double-click to edit; click terminal dots to join nodes')
 
+
+# ============================================================================
+# GUI v3: multiport plotting, true Wilkinson topology layout, one-point markers,
+# full S-matrix inspector, CSV export and optional constrained LC optimization.
+# Uses exactly the same CircuitNetlist and connection-matrix solver as v2.
+# ============================================================================
+import csv
+import json
+import queue
+import subprocess
+import sys
+import threading
+
+
+def detect_wilkinson(elements, ports):
+    """Return a layout mapping only for a genuine 3-port 2-TLINE + R divider.
+
+    This validates ELECTRICAL NODES, not element ordering, names, or coordinates.
+    The automatic layout is a presentation of the netlist; it never edits nodes.
+    """
+    if len(ports) != 3 or len(elements) != 3:
+        return None
+    lines = [e for e in elements if e['type'] == 'TLINE' and len(e['nodes']) == 2]
+    resistors = [e for e in elements if e['type'] == 'RES' and len(e['nodes']) == 2]
+    if len(lines) != 2 or len(resistors) != 1:
+        return None
+    numbers = sorted(ports)
+    p1, p2, p3 = numbers
+    nodes = [ports[p]['node'] for p in numbers]
+    if len(set(nodes)) != 3 or any(str(n).upper() in ('0', 'GND') for n in nodes):
+        return None
+    in_node, upper_node, lower_node = nodes
+    selected = {}
+    for tline in lines:
+        if set(tline['nodes']) == {in_node, upper_node}:
+            if 'upper' in selected:
+                return None
+            selected['upper'] = tline['name']
+        elif set(tline['nodes']) == {in_node, lower_node}:
+            if 'lower' in selected:
+                return None
+            selected['lower'] = tline['name']
+        else:
+            return None
+    if set(resistors[0]['nodes']) != {upper_node, lower_node} or len(selected) != 2:
+        return None
+    return dict(upper=selected['upper'], lower=selected['lower'],
+                resistor=resistors[0]['name'], ports=(p1,p2,p3),
+                nodes=(in_node,upper_node,lower_node))
+
+
+class SchematicAppV3(SchematicAppV2):
+    """Drop-in successor to v2; keep the original electrical solver unchanged."""
+
+    def _init_ui(self):
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+        self.root.title('Topic 7 | S-Matrix Circuit Editor v3')
+        self.root.geometry('1440x930')
+        self.root.minsize(1020,700)
+        self.root.option_add('*Font', 'Helvetica 11')
+        self._wilkinson = None
+        self._sim_freqs = None
+        self._sim_s = None
+        self._sim_ports = []
+        self._sp_pairs = []
+        self._optimizer_queue = queue.Queue()
+        self._optimizer_running = False
+
+        toolbar = ttk.Frame(self.root, padding=7)
+        toolbar.pack(fill='x')
+        for label, command in [('New',self.new_document),('Open netlist',self.open_file),
+                               ('Save netlist',self.save_file),('Run selected S',self.simulate),
+                               ('Auto layout',self.auto_layout),('Edit',self.edit_selected),
+                               ('Delete',self.delete_selected)]:
+            ttk.Button(toolbar,text=label,command=command).pack(side='left',padx=2)
+        ttk.Separator(toolbar,orient='vertical').pack(side='left',fill='y',padx=6)
+        ttk.Label(toolbar,text='Start GHz').pack(side='left',padx=(2,3))
+        ttk.Entry(toolbar,width=7,textvariable=self.start).pack(side='left')
+        ttk.Label(toolbar,text='Stop GHz').pack(side='left',padx=(8,3))
+        ttk.Entry(toolbar,width=7,textvariable=self.stop).pack(side='left')
+        ttk.Label(toolbar,text='Points').pack(side='left',padx=(8,3))
+        ttk.Entry(toolbar,width=6,textvariable=self.points).pack(side='left')
+
+        body = ttk.Panedwindow(self.root,orient='horizontal')
+        body.pack(fill='both',expand=True)
+        side = ttk.Frame(body,width=220,padding=9)
+        body.add(side,weight=0)
+        ttk.Label(side,text='Add components',font=('Helvetica',13,'bold')).pack(anchor='w',pady=(0,6))
+        buttons = ttk.Frame(side)
+        buttons.pack(fill='x')
+        for i,kind in enumerate(['RES','CAP','IND','TLINE','MLIN','CLIN','STUB','OPEN','SHORT','S2P']):
+            ttk.Button(buttons,text=f'+ {kind}',command=lambda k=kind:self.add_element(k)).grid(
+                row=i//2,column=i%2,padx=2,pady=2,sticky='ew')
+        buttons.columnconfigure(0,weight=1);buttons.columnconfigure(1,weight=1)
+        ttk.Button(side,text='+ External port',command=self.add_port).pack(fill='x',pady=(8,5))
+        ttk.Separator(side).pack(fill='x',pady=7)
+
+        ttk.Label(side,text='S-parameter curves',font=('Helvetica',12,'bold')).pack(anchor='w')
+        ttk.Label(side,text='Select multiple (Cmd / Ctrl + click)',font=('Helvetica',9),
+                  foreground='#64748b').pack(anchor='w',pady=(0,4))
+        self.sp_list = tk.Listbox(side,height=9,selectmode=tk.MULTIPLE,
+                                  exportselection=False,activestyle='none',font=('Helvetica',11))
+        self.sp_list.pack(fill='x')
+        row = ttk.Frame(side)
+        row.pack(fill='x',pady=(4,7))
+        ttk.Button(row,text='Common',command=self.select_common).pack(side='left',expand=True,fill='x')
+        ttk.Button(row,text='All',command=self.select_all).pack(side='left',expand=True,fill='x')
+        ttk.Button(row,text='Clear',command=lambda:self.sp_list.selection_clear(0,'end')).pack(
+            side='left',expand=True,fill='x')
+
+        ttk.Label(side,text='Inspect full S matrix',font=('Helvetica',12,'bold')).pack(anchor='w',pady=(5,2))
+        inspect_row=ttk.Frame(side);inspect_row.pack(fill='x')
+        self.inspect_ghz=tk.StringVar(value='2.4')
+        ttk.Entry(inspect_row,textvariable=self.inspect_ghz,width=7).pack(side='left',padx=(0,4))
+        ttk.Label(inspect_row,text='GHz').pack(side='left',padx=(0,5))
+        ttk.Button(inspect_row,text='Inspect',command=self.inspect_matrix).pack(side='left',fill='x',expand=True)
+        ttk.Button(side,text='Export plotted CSV',command=self.export_csv).pack(fill='x',pady=(7,4))
+        ttk.Separator(side).pack(fill='x',pady=8)
+
+        ttk.Label(side,text='LC optimization',font=('Helvetica',12,'bold')).pack(anchor='w')
+        ttk.Label(side,text='5-element C1/C3/C5 + L2/L4 only',foreground='#64748b',
+                  font=('Helvetica',9)).pack(anchor='w',pady=(0,4))
+        self.optimize_button=ttk.Button(side,text='Optimize LC (DE + SLSQP)',
+                                       command=self.optimize_lc)
+        self.optimize_button.pack(fill='x')
+        ttk.Label(side,text='Optimization uses the existing v2 script\nand its fixed frequency specifications.',
+                  foreground='#64748b',font=('Helvetica',9),justify='left').pack(anchor='w',pady=(4,8))
+        ttk.Separator(side).pack(fill='x',pady=7)
+        ttk.Label(side,text='Editing',font=('Helvetica',12,'bold')).pack(anchor='w')
+        ttk.Label(side,text=('Drag to move • double-click to edit\n'
+                             'Click two terminal dots to join nodes\n'
+                             'Auto layout never changes connectivity\n'
+                             'One-point sweeps show markers'),
+                  justify='left',font=('Helvetica',10),wraplength=210).pack(anchor='w',pady=(4,0))
+
+        right=ttk.Panedwindow(body,orient='vertical')
+        body.add(right,weight=1)
+        diagram_frame=ttk.Frame(right)
+        right.add(diagram_frame,weight=3)
+        self.canvas=tk.Canvas(diagram_frame,bg='#f8fafc',highlightthickness=0)
+        self.canvas.pack(fill='both',expand=True)
+        for seq,fn in [('<ButtonPress-1>',self.mouse_down),('<B1-Motion>',self.mouse_move),
+                       ('<ButtonRelease-1>',self.mouse_up),('<Double-Button-1>',self.double_click),
+                       ('<Configure>',lambda ev:self.redraw())]:
+            self.canvas.bind(seq,fn)
+        plot_frame=ttk.Frame(right)
+        right.add(plot_frame,weight=2)
+        self.figure=Figure(figsize=(9,4),dpi=100)
+        self.ax=self.figure.add_subplot(111)
+        self.chart=FigureCanvasTkAgg(self.figure,master=plot_frame)
+        self.chart.get_tk_widget().pack(side='top',fill='both',expand=True)
+        self.navtoolbar=NavigationToolbar2Tk(self.chart,plot_frame,pack_toolbar=False)
+        self.navtoolbar.update();self.navtoolbar.pack(side='bottom',fill='x')
+        self._empty_plot('Select curves, then click Run selected S')
+        self.status=tk.StringVar(value='Ready | Frequencies are in GHz; connections are netlist node names.')
+        ttk.Label(self.root,textvariable=self.status,relief='sunken',padding=5).pack(side='bottom',fill='x')
+
+    def _empty_plot(self,text):
+        if not hasattr(self,'ax'):return
+        self.ax.clear()
+        self.ax.text(0.5,0.5,text,ha='center',va='center',transform=self.ax.transAxes,
+                     color='#64748b',fontsize=11)
+        self.ax.set_xticks([]);self.ax.set_yticks([])
+        self.figure.tight_layout(pad=1.8)
+        self.chart.draw_idle()
+
+    def _invalidate_simulation(self):
+        self._sim_freqs=None
+        self._sim_s=None
+        self._sim_ports=[]
+        self._empty_plot('Circuit changed • click Run selected S')
+
+    def new_document(self):
+        self._wilkinson=None
+        super().new_document()
+        self.refresh_sp_options()
+        self._invalidate_simulation()
+
+    def open_path(self,path):
+        self._wilkinson=None
+        super().open_path(path)
+        if self.current_path == Path(path):
+            self.refresh_sp_options()
+            self._invalidate_simulation()
+            self.status.set(f'Loaded {Path(path).name} | {len(self.ports)} ports | '
+                            f'{len(self.elements)} elements | auto layout complete')
+
+    def add_port(self):
+        self._wilkinson=None
+        super().add_port()
+        self.refresh_sp_options()
+        self._invalidate_simulation()
+
+    def add_element(self,kind):
+        self._wilkinson=None
+        super().add_element(kind)
+        self._invalidate_simulation()
+
+    def edit_selected(self):
+        super().edit_selected()
+        self._invalidate_simulation()
+
+    def delete_selected(self):
+        self._wilkinson=None
+        super().delete_selected()
+        self.refresh_sp_options()
+        self._invalidate_simulation()
+
+    def _merge_nodes(self,source,destination):
+        super()._merge_nodes(source,destination)
+        self._invalidate_simulation()
+
+    def refresh_sp_options(self):
+        """Labels use actual port numbers, matrix indices use sorted port order."""
+        if not hasattr(self,'sp_list'):return
+        self.sp_list.delete(0,'end')
+        nums=sorted(self.ports)
+        self._sp_pairs=[]
+        for r,p_out in enumerate(nums):
+            for c,p_in in enumerate(nums):
+                label=(f'S{p_out}{p_in}' if max(nums)<=9 else f'S[{p_out},{p_in}]')
+                self._sp_pairs.append((label,r,c))
+                self.sp_list.insert('end',label)
+        self.select_common()
+
+    def select_common(self):
+        if not hasattr(self,'sp_list'):return
+        self.sp_list.selection_clear(0,'end')
+        nums=sorted(self.ports)
+        if len(nums)==3:
+            selected={(nums[0],nums[0]),(nums[1],nums[0]),
+                      (nums[2],nums[0]),(nums[1],nums[2])}
+        elif len(nums)>=2:
+            selected={(nums[0],nums[0]),(nums[1],nums[0])}
+        else:
+            selected={(nums[0],nums[0])} if nums else set()
+        for k,(_,r,c) in enumerate(self._sp_pairs):
+            if (nums[r],nums[c]) in selected:self.sp_list.selection_set(k)
+
+    def select_all(self):
+        self.sp_list.selection_set(0,'end')
+
+    def _selected_sp(self):
+        return [self._sp_pairs[i] for i in self.sp_list.curselection()]
+
+    def simulate(self):
+        try:
+            net,_=self._validate()
+            port_numbers=sorted(net.external_ports)
+            if len(port_numbers)<2:raise ValueError('At least two external ports required')
+            selected=self._selected_sp()
+            if not selected:
+                raise ValueError('Choose at least one S-parameter from the left panel')
+            frequencies=np.asarray(net.freqs,dtype=float)
+            # Cache COMPLEX N x N matrices, not just the first two port magnitudes.
+            matrices=np.asarray([solve_netlist_at_freq(net,float(f),method='matrix')
+                                  for f in frequencies],dtype=complex)
+            target=(len(port_numbers),len(port_numbers))
+            if matrices.shape!=(len(frequencies),*target):
+                raise ValueError(f'Unexpected solver matrix shape: {matrices.shape}; expected N x {target}')
+            self._sim_freqs=frequencies
+            self._sim_s=matrices
+            self._sim_ports=port_numbers
+            self.ax.clear()
+            palette=['#2563eb','#ea580c','#059669','#a855f7','#e11d48',
+                     '#0891b2','#64748b','#8b5cf6','#b45309','#14b8a6']
+            for k,(label,r,c) in enumerate(selected):
+                values=20*np.log10(np.maximum(np.abs(matrices[:,r,c]),1e-15))
+                self.ax.plot(frequencies/1e9,values,label=label,
+                             color=palette[k%len(palette)],linewidth=1.8,
+                             marker='o' if len(frequencies)==1 else None,
+                             markersize=7 if len(frequencies)==1 else 3)
+            if len(frequencies)==1:
+                # Matplotlib needs a nonzero x span for a single datapoint.
+                center=frequencies[0]/1e9
+                span=max(0.01,center*0.005)
+                self.ax.set_xlim(center-span,center+span)
+            self.ax.set(xlabel='Frequency (GHz)',ylabel='Magnitude (dB)',
+                        title=f'S-parameters · {len(port_numbers)}-port · team connection-matrix solver')
+            self.ax.grid(alpha=.23)
+            self.ax.legend(fontsize=9,ncol=2,loc='best')
+            self.figure.tight_layout(pad=1.7)
+            self.chart.draw_idle()
+            fmid=float(frequencies[len(frequencies)//2])/1e9
+            self.status.set(f'Simulated {len(frequencies)} point(s), '
+                            f'{frequencies[0]/1e9:g}–{frequencies[-1]/1e9:g} GHz '
+                            f'| {len(port_numbers)} ports | {len(selected)} curves | '
+                            f'center {fmid:.4g} GHz')
+        except Exception as exc:
+            messagebox.showerror('Simulation error',str(exc))
+
+    def inspect_matrix(self):
+        try:
+            net,_=self._validate()
+            freq=float(self.inspect_ghz.get())
+            if not np.isfinite(freq) or freq<=0:
+                raise ValueError('Inspection frequency must be positive GHz')
+            f_hz=freq*1e9
+            # Validate at the requested point even if the sweep is one-point.
+            from components import to_si
+            if any(el['type']=='S2P' for el in net.elements):
+                for el in net.elements:
+                    if el['type']=='S2P' and not (el['ts'].freqs[0]<=f_hz<=el['ts'].freqs[-1]):
+                        raise ValueError(f"{el['name']}: frequency is outside Touchstone data")
+            matrix=solve_netlist_at_freq(net,f_hz,method='matrix')
+            nums=sorted(net.external_ports)
+            db=20*np.log10(np.maximum(np.abs(matrix),1e-15))
+            win=tk.Toplevel(self.root)
+            win.title(f'Full S-matrix at {freq:g} GHz')
+            outer=ttk.Frame(win,padding=15)
+            outer.pack(fill='both',expand=True)
+            ttk.Label(outer,text=f'S-parameter magnitude (dB) at {freq:g} GHz',
+                      font=('Helvetica',14,'bold')).grid(row=0,column=0,columnspan=len(nums)+1,pady=(0,10))
+            for c,p in enumerate(nums,1):
+                ttk.Label(outer,text=f'Input P{p}',font=('Helvetica',11,'bold')).grid(row=1,column=c,padx=8)
+            for r,p in enumerate(nums):
+                ttk.Label(outer,text=f'Output P{p}',font=('Helvetica',11,'bold')).grid(row=r+2,column=0,pady=5)
+                for c,_ in enumerate(nums):
+                    ttk.Label(outer,text=f'{db[r,c]:.3f}',width=12,
+                              anchor='center').grid(row=r+2,column=c+1,pady=5,padx=4)
+            ttk.Label(outer,text='Values below -300 dB are clipped at -300 dB.',
+                      foreground='#64748b').grid(row=len(nums)+2,column=0,columnspan=len(nums)+1,pady=(10,0))
+            self.status.set(f'Inspected complete {len(nums)}×{len(nums)} S-matrix at {freq:g} GHz')
+        except Exception as exc:
+            messagebox.showerror('Inspection error',str(exc))
+
+    def export_csv(self):
+        if self._sim_s is None:
+            messagebox.showinfo('No results','Run the simulation before exporting CSV.')
+            return
+        path=filedialog.asksaveasfilename(defaultextension='.csv',
+                    filetypes=[('CSV files','*.csv')],initialfile='s_parameters_v3.csv')
+        if not path:return
+        try:
+            portnums=self._sim_ports
+            # Export ALL magnitude and phase values, not only currently selected curves.
+            fields=['frequency_hz']
+            for r,pout in enumerate(portnums):
+                for c,pin in enumerate(portnums):
+                    fields += [f'S{pout}{pin}_mag_db',f'S{pout}{pin}_phase_deg']
+            with open(path,'w',newline='',encoding='utf-8') as fp:
+                writer=csv.writer(fp)
+                writer.writerow(fields)
+                for f,matrix in zip(self._sim_freqs,self._sim_s):
+                    row=[f]
+                    for r in range(len(portnums)):
+                        for c in range(len(portnums)):
+                            x=matrix[r,c]
+                            row.extend([20*np.log10(max(abs(x),1e-15)),
+                                        float(np.angle(x,deg=True))])
+                    writer.writerow(row)
+            self.status.set(f'Exported complete S-matrix CSV: {Path(path).name}')
+        except Exception as exc:
+            messagebox.showerror('Export error',str(exc))
+
+    def auto_layout(self):
+        """Specialized topology check, falling back to v2 LC ladder/general layout."""
+        config=detect_wilkinson(self.elements,self.ports)
+        if config is None:
+            self._wilkinson=None
+            super().auto_layout()
+            return
+        self._wilkinson=config
+        a,b,c=config['ports']
+        self.positions[('port',a)]=(105,235)
+        self.positions[('el',config['upper'])]=(390,140)
+        self.positions[('el',config['lower'])]=(390,330)
+        self.positions[('el',config['resistor'])]=(690,235)
+        self.positions[('port',b)]=(975,140)
+        self.positions[('port',c)]=(975,330)
+        self.active_pin=None
+        self.status.set('Auto layout: validated 3-port Wilkinson circuit (nodes unchanged).')
+        self.redraw()
+
+    def _geometry(self,el):
+        config=self._wilkinson
+        if config and el['name'] in (config['upper'],config['lower']):
+            x,y=self._center(('el',el['name']))
+            # Visualize the shared input node on the left even if the netlist
+            # writes the TLINE node order as OUT IN.
+            in_node=config['nodes'][0]
+            return False,[(x-69,y) if n==in_node else (x+69,y) for n in el['nodes']]
+        if config and el['name']==config['resistor']:
+            x,y=self._center(('el',el['name']))
+            upper_node,lower_node=config['nodes'][1:]
+            pts=[]
+            for n in el['nodes']:
+                pts.append((x,y-35) if n==upper_node else (x,y+35))
+            return True,pts
+        return super()._geometry(el)
+
+    def redraw(self):
+        # Preserve v2's generic display for every topology other than Wilkinson.
+        config=detect_wilkinson(self.elements,self.ports)
+        if not hasattr(self,'canvas') or config is None or self._wilkinson is None:
+            return super().redraw()
+        self._wilkinson=config
+        cv=self.canvas
+        cv.delete('all')
+        self.pin_hit=[];self.pin_coords={}
+        a,b,c=config['ports']
+        for el in self.elements:
+            key=('el',el['name'])
+            _,pts=self._geometry(el)
+            for i,(x,y) in enumerate(pts):
+                self._pin((key,i),el['nodes'][i],x,y)
+        for p,data in self.ports.items():
+            key=('port',p);x,y=self._center(key)
+            # For this layout P1 faces right, and both output ports face left.
+            self._pin((key,0),data['node'],x+(44 if p==a else -44),y)
+
+        def el_pin(name,node):
+            el=next(e for e in self.elements if e['name']==name)
+            i=el['nodes'].index(node)
+            _,x,y=self.pin_coords[(('el',name),i)]
+            return x,y
+
+        def port_pin(p):
+            _,x,y=self.pin_coords[(('port',p),0)]
+            return x,y
+
+        n_in,n_upper,n_lower=config['nodes']
+        src=port_pin(a)
+        branch_up=el_pin(config['upper'],n_in)
+        branch_low=el_pin(config['lower'],n_in)
+        left_x=min(branch_up[0],branch_low[0])
+        trunk_x=(src[0]+left_x)/2
+        wire={'fill':'#64748b','width':2.1,'joinstyle':'round'}
+        # Shared input node: P1 -> vertical trunk -> both quarter-wave lines.
+        cv.create_line(src[0],src[1],trunk_x,src[1],**wire)
+        cv.create_line(trunk_x,min(src[1],branch_up[1],branch_low[1]),
+                       trunk_x,max(src[1],branch_up[1],branch_low[1]),**wire)
+        for x,y in [branch_up,branch_low]:
+            cv.create_line(trunk_x,y,x,y,**wire)
+        cv.create_oval(trunk_x-3.5,src[1]-3.5,trunk_x+3.5,src[1]+3.5,
+                       fill='#334155',outline='')
+
+        # Each output has ONE electrical node shared by its TLINE, PORT and R.
+        for port,branch,node in [(b,config['upper'],n_upper),
+                                 (c,config['lower'],n_lower)]:
+            tx,ty=el_pin(branch,node)
+            px,py=port_pin(port)
+            rx,ry=el_pin(config['resistor'],node)
+            # Horizontal output bus, with a vertical resistor spur.
+            cv.create_line(tx,ty,px,ty,px,py,**wire)
+            cv.create_line(rx,ry,rx,ty,tx,ty,**wire)
+            cv.create_oval(rx-3.5,ty-3.5,rx+3.5,ty+3.5,fill='#334155',outline='')
+
+        # Draw components on top of the electrical connections.
+        for el in self.elements:
+            key=('el',el['name']);x,y=self._center(key)
+            col=COLORS.get(el['type'],'#475569')
+            outline='#f97316' if self.selected==key else col
+            vertical,pts=self._geometry(el)
+            if vertical:
+                cv.create_line(x,y-35,x,y-24,fill=col,width=2)
+                cv.create_line(x,y+24,x,y+35,fill=col,width=2)
+                cv.create_rectangle(x-37,y-24,x+37,y+24,fill='white',outline=outline,width=2)
+            else:
+                cv.create_line(x-69,y,x-57,y,fill=col,width=2)
+                cv.create_line(x+57,y,x+69,y,fill=col,width=2)
+                cv.create_rectangle(x-57,y-26,x+57,y+26,fill='white',outline=outline,width=2)
+            cv.create_text(x,y-8,text=f'{el["type"]} {el["name"]}',fill='#0f172a',
+                           font=('Helvetica',10,'bold'))
+            if el['type']=='TLINE':
+                desc=f"Z0={el['params'].get('Z0','?')}  EL={el['params'].get('EL','?')}°"
+            elif el['type']=='RES':
+                desc=f"R={el['params'].get('R','?')} Ω"
+            else:
+                details=' '.join(f'{k}={v}' for k,v in el['params'].items())
+                desc=details[:19]+('…' if len(details)>19 else '')
+            cv.create_text(x,y+12,text=desc,fill='#64748b',font=('Helvetica',9))
+        for p in (a,b,c):
+            x,y=self._center(('port',p))
+            outline='#f97316' if self.selected==('port',p) else '#2563eb'
+            cv.create_oval(x-29,y-21,x+29,y+21,fill='#dbeafe',outline=outline,width=2)
+            cv.create_text(x,y,text=f'P{p}',fill='#1e40af',font=('Helvetica',11,'bold'))
+        for pin,(node,x,y) in self.pin_coords.items():
+            cv.create_oval(x-5,y-5,x+5,y+5,
+                           fill='#ef4444' if self.active_pin==pin else '#111827',
+                           outline='white',width=1.2)
+        cv.create_text(20,15,anchor='w',text='WILKINSON · electrical-node topology verified',
+                       fill='#64748b',font=('Helvetica',10,'bold'))
+
+    def optimize_lc(self):
+        """Run the existing v2 optimizer on the current five-component LC netlist.
+
+        The generic GUI still cannot optimize arbitrary N-port circuits: the
+        optimizer's parameter grouping and design bands are fixed by its script.
+        """
+        if self._optimizer_running:
+            return
+        script=Path(__file__).resolve().parent/'optimize_filter_lc_v2.py'
+        if not script.is_file():
+            messagebox.showerror('Optimizer not found',
+                                 f'Put optimize_filter_lc_v2.py beside circuit_gui_v3.py:\n{script}')
+            return
+        expected={'C1':'CAP','C3':'CAP','C5':'CAP','L2':'IND','L4':'IND'}
+        names={e['name']:e['type'] for e in self.elements}
+        if len(self.ports)!=2 or len(self.elements)!=5 or names!=expected:
+            messagebox.showwarning('LC optimizer only',
+                 'This optimizer supports only a two-port, five-element LC filter '
+                 'named C1, C3, C5, L2, L4. For other circuits, use the simulator.')
+            return
+        guard=simpledialog.askfloat('LC optimization',
+                 'Stopband guard above required 22 dB (dB):',
+                 initialvalue=1.0,minvalue=0,maxvalue=10,parent=self.root)
+        if guard is None:return
+        try:
+            net,text=self._validate()
+            out=Path(__file__).resolve().parent/'results_gui_optimization'
+            out.mkdir(parents=True,exist_ok=True)
+            source=out/'gui_filter_input.net'
+            source.write_text(text,encoding='utf-8')
+        except Exception as exc:
+            messagebox.showerror('Invalid circuit',str(exc));return
+        self.optimize_button.configure(state='disabled')
+        self._optimizer_running=True
+        self.status.set(f'Running LC optimizer with {guard:g} dB stopband guard...')
+        args=[sys.executable,str(script),'--input',str(source),
+              '--output',str(out),'--stop-guard',str(guard)]
+
+        def worker():
+            try:
+                result=subprocess.run(args,cwd=str(script.parent),capture_output=True,
+                                      text=True,timeout=240,check=False)
+                self._optimizer_queue.put((result.returncode,result.stdout,result.stderr,out))
+            except Exception as exc:
+                self._optimizer_queue.put((-1,'',str(exc),out))
+        threading.Thread(target=worker,daemon=True).start()
+        self.root.after(150,self._poll_optimizer)
+
+    def _poll_optimizer(self):
+        try:
+            code,stdout,stderr,out=self._optimizer_queue.get_nowait()
+        except queue.Empty:
+            self.root.after(150,self._poll_optimizer)
+            return
+        self._optimizer_running=False
+        self.optimize_button.configure(state='normal')
+        if code!=0:
+            self.status.set('Optimization failed; see error message')
+            messagebox.showerror('Optimizer failed',(stderr or stdout)[-2500:])
+            return
+        metrics=out/'optimization_metrics_v2.json'
+        netfile=out/'filter_lc_optimized_v2.net'
+        try:
+            info=json.loads(metrics.read_text(encoding='utf-8'))
+            final=info['optimized_dense']
+            pb=final['peak_pass_loss_db']
+            sb=final['min_stop_attenuation_db']
+            feasible=bool(final['feasible'])
+        except Exception as exc:
+            messagebox.showerror('Optimization result incomplete',str(exc))
+            return
+        label='PASS' if feasible else 'FAIL'
+        self.status.set(f'Optimization {label} | PB={pb:.4f} dB, SB={sb:.4f} dB | {out.name}')
+        if not feasible:
+            messagebox.showwarning('Optimization target NOT satisfied',
+                   f'PB max: {pb:.4f} dB\nSB min: {sb:.4f} dB\n'
+                   f'Output saved in {out}; not automatically loaded.')
+            return
+        if messagebox.askyesno('LC optimization passed',
+                  f'Passband max loss: {pb:.4f} dB\n'
+                  f'Stopband min attenuation: {sb:.4f} dB\n\n'
+                  f'Optimized file: {netfile.name}\n\nLoad optimized circuit into GUI?'):
+            self.open_path(netfile)
+            # Set a visually useful sweep after loading optimizer output.
+            self.start.set('0.05');self.stop.set('2.0');self.points.set('401')
+            self.simulate()
+
+
 if __name__ == '__main__':
     root=tk.Tk()
-    app=SchematicAppV2(root)
+    app=SchematicAppV3(root)
     root.mainloop()
