@@ -363,7 +363,274 @@ class SchematicApp:
         if item:self.selected=item;self.edit_selected()
 
 
-if __name__=='__main__':
+
+
+class SchematicAppV2(SchematicApp):
+    """v2: topology-aware layout, ground symbols, GHz controls and embedded plots.
+
+    Remains compatible with the team's CircuitNetlist and solver functions.
+    Positions are display-only; electric connectivity is determined by node labels.
+    """
+    def _init_ui(self):
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+        self.root.title('Topic 7 | S-Matrix Circuit Editor v2')
+        self.root.geometry('1360x900')
+        self.root.minsize(970,670)
+        self.root.option_add('*Font', 'Helvetica 11')
+        toolbar=ttk.Frame(self.root,padding=7)
+        toolbar.pack(fill='x')
+        for label,command in [('New',self.new_document),('Open',self.open_file),('Save netlist',self.save_file),
+                              ('Run S11/S21',self.simulate),('Auto layout',self.auto_layout),
+                              ('Edit',self.edit_selected),('Delete',self.delete_selected)]:
+            ttk.Button(toolbar,text=label,command=command).pack(side='left',padx=2)
+        ttk.Label(toolbar,text=' Start (GHz)').pack(side='left',padx=(10,2))
+        ttk.Entry(toolbar,width=7,textvariable=self.start).pack(side='left')
+        ttk.Label(toolbar,text=' Stop (GHz)').pack(side='left',padx=(7,2))
+        ttk.Entry(toolbar,width=7,textvariable=self.stop).pack(side='left')
+        ttk.Label(toolbar,text=' Points').pack(side='left',padx=(7,2))
+        ttk.Entry(toolbar,width=6,textvariable=self.points).pack(side='left')
+        body=ttk.Panedwindow(self.root,orient='horizontal')
+        body.pack(fill='both',expand=True)
+        side=ttk.Frame(body,width=195,padding=8);body.add(side,weight=0)
+        ttk.Label(side,text='Components',font=('Helvetica',13,'bold')).pack(anchor='w',pady=(2,8))
+        for kind in ['RES','CAP','IND','TLINE','MLIN','CLIN','STUB','OPEN','SHORT','S2P']:
+            ttk.Button(side,text=f'+ {kind}',command=lambda kind=kind:self.add_element(kind)).pack(fill='x',pady=2)
+        ttk.Separator(side).pack(fill='x',pady=10)
+        ttk.Button(side,text='+ External Port',command=self.add_port).pack(fill='x')
+        ttk.Label(side,text='Controls',font=('Helvetica',12,'bold')).pack(anchor='w',pady=(18,7))
+        info=('Drag a component to move it.\n\n'
+              'Click terminal dots in succession to join electrical nodes.\n\n'
+              'Double click a component to edit its name, nodes, and values.\n\n'
+              'Click Auto layout to arrange ladder LC networks.\n\n'
+              'Green triangles mark ground (node 0).\n\n'
+              'Frequency inputs are always in GHz.')
+        ttk.Label(side,text=info.replace('\\n','\n'),justify='left',wraplength=175).pack(anchor='w')
+        right=ttk.Panedwindow(body,orient='vertical');body.add(right,weight=1)
+        diagram_frame=ttk.Frame(right)
+        right.add(diagram_frame,weight=3)
+        self.canvas=tk.Canvas(diagram_frame,bg='#f8fafc',highlightthickness=0)
+        self.canvas.pack(fill='both',expand=True)
+        for seq,fn in [('<ButtonPress-1>',self.mouse_down),('<B1-Motion>',self.mouse_move),
+                       ('<ButtonRelease-1>',self.mouse_up),('<Double-Button-1>',self.double_click),
+                       ('<Configure>',lambda ev:self.redraw())]:self.canvas.bind(seq,fn)
+        plot_frame=ttk.Frame(right)
+        right.add(plot_frame,weight=2)
+        self.figure=Figure(figsize=(8,3),dpi=100)
+        self.ax=self.figure.add_subplot(111)
+        self.ax.text(0.5,0.5,'Click Run S11/S21 to display simulation',ha='center',va='center',
+                     transform=self.ax.transAxes,color='#64748b',fontsize=11)
+        self.ax.set_xticks([]);self.ax.set_yticks([])
+        self.chart=FigureCanvasTkAgg(self.figure,master=plot_frame)
+        self.chart.get_tk_widget().pack(fill='both',expand=True)
+        self.figure.tight_layout(pad=2)
+        self.status=tk.StringVar(value='Ready. Frequency inputs are in GHz.')
+        ttk.Label(self.root,textvariable=self.status,relief='sunken',padding=5).pack(side='bottom',fill='x')
+
+    def new_document(self):
+        super().new_document()
+        self.start.set('0.05');self.stop.set('3.0')
+        self.redraw()
+
+    def open_path(self,path):
+        super().open_path(path)
+        if self.current_path!=Path(path):return
+        # Base v1 opened frequencies as Hz: convert explicitly to GHz
+        # Read original frequency tokens. In the team's SPICE parser bare 'M' means milli,
+        # while filter_lc.net uses '50M' intending 50 MHz. Interpret 'M' in
+        # FREQ tokens as MHz for GUI display/export, without mutating source files.
+        import re
+        from components import to_si
+        raw=Path(path).read_text(encoding='utf-8-sig')
+        match=re.search(r'^\s*FREQ\s+START=(\S+)\s+STOP=(\S+)',raw,re.I|re.M)
+        def freq(token):
+            if re.fullmatch(r'[+\-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+\-]?\d+)?M',token):
+                return float(token[:-1])*1e6
+            return float(to_si(token))
+        if match:
+            self.start.set(f'{freq(match.group(1))/1e9:.9g}')
+            self.stop.set(f'{freq(match.group(2))/1e9:.9g}')
+        else:
+            self.start.set(f'{float(self.start.get())/1e9:.9g}')
+            self.stop.set(f'{float(self.stop.get())/1e9:.9g}')
+        self.auto_layout()
+
+    def _frequency_text(self):
+        try:
+            first=float(self.start.get());last=float(self.stop.get());count=int(self.points.get())
+        except ValueError as exc:raise ValueError('Start, Stop and Points must be numbers.') from exc
+        if not np.isfinite(first) or not np.isfinite(last) or first<=0 or (last<first) or (last==first and count!=1):
+            raise ValueError('Require 0 < Start < Stop, except one-point sweeps where Start = Stop.')
+        if count<1 or count>20001:raise ValueError('Points must be between 1 and 20001.')
+        return f'{first:.12g}G',f'{last:.12g}G',count
+
+    def _validate(self):
+        start,stop,points=self._frequency_text()
+        raw=export_text(self.elements,self.ports,start,stop,points)
+        net=CircuitNetlist()
+        net.base_dir=str((self.current_path or (Path(__file__).resolve().parent/'untitled.net')).resolve().parent)
+        net.parse_text(raw)
+        return net,raw
+
+    def save_file(self):
+        path=filedialog.asksaveasfilename(defaultextension='.net',filetypes=[('Netlist','*.net')],
+             initialfile=(self.current_path.name if self.current_path else 'circuit_gui.net'))
+        if not path:return
+        try:
+            start,stop,points=self._frequency_text()
+            raw=export_text(self.elements,self.ports,start,stop,points)
+            chk=CircuitNetlist();chk.base_dir=str(Path(path).resolve().parent);chk.parse_text(raw)
+            Path(path).write_text(raw,encoding='utf-8')
+            self.current_path=Path(path)
+            self.status.set(f'Saved {Path(path).name} · Frequencies exported in Hz using G suffix')
+        except Exception as ex:messagebox.showerror('Cannot save',str(ex))
+
+    def simulate(self):
+        try:
+            net,_=self._validate()
+            if len(net.external_ports)<2:raise ValueError('At least two external PORTs are required.')
+            f=np.asarray(net.freqs,dtype=float)
+            s11=np.empty(len(f));s21=np.empty(len(f))
+            for i,frequency in enumerate(f):
+                s=solve_netlist_at_freq(net,float(frequency),method='matrix')
+                s11[i]=20*np.log10(max(abs(s[0,0]),1e-15))
+                s21[i]=20*np.log10(max(abs(s[1,0]),1e-15))
+            self.ax.clear()
+            self.ax.plot(f/1e9,s11,label='S11',color='#2563eb',linewidth=1.8)
+            self.ax.plot(f/1e9,s21,label='S21',color='#ea580c',linewidth=1.8)
+            self.ax.set_xlabel('Frequency (GHz)');self.ax.set_ylabel('Magnitude (dB)')
+            self.ax.grid(alpha=.24);self.ax.legend(loc='best',fontsize=9)
+            self.ax.set_title('S-parameters · Team connection-matrix solver',fontsize=11)
+            self.figure.tight_layout(pad=1.7)
+            self.chart.draw_idle()
+            self.status.set(f'Calculated {len(f)} points, {f[0]/1e9:g}–{f[-1]/1e9:g} GHz | S21 end={s21[-1]:.2f} dB')
+        except Exception as exc:messagebox.showerror('Simulation error',str(exc))
+
+    def auto_layout(self):
+        """Position simple grounded ladders by actual node connectivity, fallback for general circuits."""
+        elements=self.elements
+        ground=lambda n:str(n).upper() in ('0','GND')
+        external=[self.ports[p]['node'] for p in sorted(self.ports)]
+        # Undirected graph of two-terminal series connections; each is an electrical edge.
+        graph={}
+        for el in elements:
+            nodes=el['nodes']
+            if len(nodes)==2 and not any(ground(n) for n in nodes):
+                a,b=nodes
+                graph.setdefault(a,[]).append((b,el['name']))
+                graph.setdefault(b,[]).append((a,el['name']))
+        path=[]
+        if len(external)>=2:
+            from collections import deque
+            start,stop=external[0],external[1]
+            queue=deque([(start,[])]);visited=set()
+            while queue:
+                node,pieces=queue.popleft()
+                if node==stop:path=pieces;break
+                if node in visited:continue
+                visited.add(node)
+                for other,name in graph.get(node,[]):
+                    if other not in visited:queue.append((other,pieces+[(node,other,name)]))
+        positioned=set();node_x={}
+        if path and len(path)<=9:
+            chain=[path[0][0]]+[b for a,b,name in path]
+            space=max(155,min(210,880//max(1,len(path))))
+            for i,node in enumerate(chain):node_x[node]=130+i*space
+            for a,b,name in path:
+                self.positions[('el',name)]=((node_x[a]+node_x[b])/2,185)
+                positioned.add(name)
+            for el in elements:
+                nodes=el['nodes']
+                if len(nodes)==2 and sum(ground(n) for n in nodes)==1:
+                    live=next(n for n in nodes if not ground(n))
+                    if live in node_x:
+                        siblings=sum(1 for item in elements[:elements.index(el)] if item['name'] not in positioned
+                                     and len(item['nodes'])==2 and live in item['nodes'] and any(ground(n) for n in item['nodes']))
+                        self.positions[('el',el['name'])]=(node_x[live]+siblings*105,315)
+                        positioned.add(el['name'])
+            for i,p in enumerate(sorted(self.ports)):
+                node=self.ports[p]['node']
+                if node in node_x:self.positions[('port',p)]=(node_x[node]-(70 if i==0 else -70),90)
+                else:self.positions[('port',p)]=(120+720*(i%2),75+70*(i//2))
+        else:
+            for i,p in enumerate(sorted(self.ports)):
+                self.positions[('port',p)]=(105+(i%4)*220,80+(i//4)*90)
+        for i,el in enumerate(e for e in elements if e['name'] not in positioned):
+            self.positions[('el',el['name'])]=(200+(i%4)*190,185+(i//4)*125)
+        self.active_pin=None
+        self.status.set('Auto layout complete. Electrical nodes unchanged.')
+        self.redraw()
+
+    def _geometry(self,el):
+        name=el['name'];x,y=self._center(('el',name));n=el['nodes']
+        vertical=(len(n)==2 and any(str(node).upper() in ('0','GND') for node in n))
+        if len(n)==1:pts=[(x,y+34)]
+        elif len(n)==2:
+            if vertical:
+                pts=[(x,y-34) if str(node).upper() not in ('0','GND') else (x,y+34) for node in n]
+            else:pts=[(x-69,y),(x+69,y)]
+        else:pts=[(x-44+88*i/(len(n)-1),y+36) for i in range(len(n))]
+        return vertical,pts
+
+    def redraw(self):
+        if not hasattr(self,'canvas'):return
+        cv=self.canvas;cv.delete('all');self.pin_hit=[];self.pin_coords={}
+        # Calculate all terminal geometries before painting wires, so wires go underneath elements.
+        for el in self.elements:
+            key=('el',el['name']);vertical,pts=self._geometry(el)
+            for i,(xx,yy) in enumerate(pts):self._pin((key,i),el['nodes'][i],xx,yy)
+        for p,data in self.ports.items():
+            key=('port',p);x,y=self._center(key)
+            self._pin((key,0),data['node'],x+(44 if p%2==1 else -44),y)
+        grouping={}
+        for pin,(node,px,py) in self.pin_coords.items():
+            if str(node).upper() not in ('0','GND'):grouping.setdefault(node,[]).append((px,py))
+        for node,positions in grouping.items():
+            if len(positions)<2:continue
+            # Shared electrical nodes are visual junctions; crossing wires do not create connections.
+            xx=[p[0] for p in positions];yy=[p[1] for p in positions]
+            hubx=float(np.median(xx));huby=float(np.median(yy))
+            for x,y in positions:
+                cv.create_line(x,y,hubx,y,hubx,huby,fill='#64748b',width=2)
+            if len(positions)>2:cv.create_oval(hubx-4,huby-4,hubx+4,huby+4,fill='#334155',outline='')
+        for el in self.elements:
+            key=('el',el['name']);x,y=self._center(key)
+            col=COLORS.get(el['type'],'#475569')
+            outline='#f97316' if self.selected==key else col
+            vertical,pts=self._geometry(el)
+            if len(el['nodes'])==2:
+                if vertical:
+                    cv.create_line(x,y-34,x,y-23,fill=col,width=2)
+                    cv.create_line(x,y+23,x,y+34,fill=col,width=2)
+                else:
+                    cv.create_line(x-69,y,x-54,y,fill=col,width=2)
+                    cv.create_line(x+54,y,x+69,y,fill=col,width=2)
+            elif len(pts)==1:cv.create_line(x,y+23,x,y+34,fill=col,width=2)
+            cv.create_rectangle(x-54,y-23,x+54,y+23,fill='white',outline=outline,width=2)
+            cv.create_text(x,y-7,text=f'{el["type"]} {el["name"]}',fill='#0f172a',font=('Helvetica',10,'bold'))
+            desc=' '.join(f'{k}={v}' for k,v in el['params'].items())
+            cv.create_text(x,y+11,text=desc[:23]+('…' if len(desc)>23 else ''),fill='#64748b',font=('Helvetica',9))
+        for p,data in self.ports.items():
+            key=('port',p);x,y=self._center(key)
+            cv.create_oval(x-29,y-21,x+29,y+21,fill='#dbeafe',outline='#2563eb',width=2)
+            cv.create_text(x,y,text=f'P{p}',fill='#1e40af',font=('Helvetica',11,'bold'))
+        # Ground signs are intentionally not linked by a long physical wire; all are node 0.
+        for pin,(node,x,y) in self.pin_coords.items():
+            isground=str(node).upper() in ('0','GND')
+            if isground:
+                cv.create_line(x-10,y+1,x+10,y+1,fill='#059669',width=2)
+                cv.create_line(x-7,y+5,x+7,y+5,fill='#059669',width=2)
+                cv.create_line(x-4,y+9,x+4,y+9,fill='#059669',width=2)
+            fill='#ef4444' if self.active_pin==pin else ('#059669' if isground else '#111827')
+            cv.create_oval(x-5,y-5,x+5,y+5,fill=fill,outline='white',width=1.2)
+        # selected node info lives in status line, so no cluttered tiny node labels
+
+    def mouse_down(self,e):
+        super().mouse_down(e)
+        if self.selected and self.active_pin is None:
+            self.status.set(f'Selected: {self.selected[1]} | double-click to edit; click terminal dots to join nodes')
+
+if __name__ == '__main__':
     root=tk.Tk()
-    app=SchematicApp(root)
+    app=SchematicAppV2(root)
     root.mainloop()
